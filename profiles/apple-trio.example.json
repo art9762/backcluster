@@ -1,0 +1,64 @@
+{
+  "document_kind": "design_example_not_runtime_config",
+  "schema_version": 0,
+  "status": "planned",
+  "hardware_validated": false,
+  "model": {
+    "family": "Qwen3.8-27B",
+    "gguf_repo": "bartowski/Qwen3.8-27B-GGUF",
+    "repo_revision": "0c92138c51f112d2f0dc84d5f6d1ebe4b9912b9a",
+    "baseline_filename": "Qwen3.8-27B-IQ4_XS.gguf",
+    "artifact_sha256": null,
+    "exact_size_bytes": null,
+    "draft_repo": "z-lab/Qwen3.8-27B-DFlash2",
+    "draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+  },
+  "runtime": {
+    "parent_commit": "0d2bf5d7df342eb4da253b440dd6959eedbce7ff",
+    "engine_commit": "9f17fc31cf60753eb6bd6ec075894edab773cb91",
+    "listen": "127.0.0.1",
+    "port": 8080,
+    "active_sequences": 1,
+    "initial_context_tokens": 16384,
+    "validated_context_tokens": null,
+    "kv_dtype": "q8_0",
+    "cloud_fallback": false
+  },
+  "devices": [
+    {
+      "alias": "mac",
+      "hardware": "MacBook Pro, base M4 Pro",
+      "physical_ram_gib_expected": 24,
+      "cpu_cores_measured": null,
+      "gpu_cores_measured": null,
+      "inference_budget_bytes_measured": null,
+      "os_ide_reserve_gib_proposed": 8,
+      "candidate_roles": ["coordinator", "full_model_decode", "layer_stage"]
+    },
+    {
+      "alias": "ipad",
+      "hardware": "iPad Pro 13 M5, 256 GB storage",
+      "physical_ram_gib_expected": 12,
+      "app_budget_bytes_measured": null,
+      "gpu_budget_bytes_measured": null,
+      "link_transport_measured": null,
+      "candidate_roles": ["prefill_tail", "layer_stage", "remote_kv"]
+    },
+    {
+      "alias": "iphone",
+      "hardware": "iPhone 17 Pro Max",
+      "physical_ram_gib_expected": 12,
+      "app_budget_bytes_measured": null,
+      "gpu_budget_bytes_measured": null,
+      "link_transport_measured": null,
+      "candidate_roles": ["remote_kv", "layer_stage"]
+    }
+  ],
+  "planner": {
+    "role_assignment": "measure_before_selecting",
+    "layer_boundaries": null,
+    "remote_page_weights": null,
+    "allow_unmeasured_budget": false,
+    "replan_only_at_session_boundary": true
+  }
+}
