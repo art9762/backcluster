@@ -90,7 +90,7 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_readable_doctor_retains_json_receipt(self):
         receipt = Path(self.temp.name) / 'doctor.json'
-        with patch('backcluster.devices.platform.system', return_value='Linux'), contextlib.redirect_stdout(io.StringIO()) as output:
+        with patch('backcluster.devices.platform.system', return_value='Linux'), patch('backcluster.devices.run', return_value=''), contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(main(['doctor', '--human', '--output', str(receipt)]), 1)
         self.assertIn('[FIX] apple_silicon_host', output.getvalue())
         self.assertIn('Metal toolchain', output.getvalue())
