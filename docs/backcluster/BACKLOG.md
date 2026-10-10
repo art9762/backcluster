@@ -1,10 +1,10 @@
 # Backlog
 
-Все задачи ниже **TODO**. ID предназначены для переноса в issues нового репозитория; это пока Markdown-план, не созданные GitHub issues. `P0` — обязательная основа, `P1` — основной результат, `P2` — оптимизация.
+BC-001 **IN PROGRESS**: CLI `doctor/profile`, схема снимков, read-only mobile report и socket tests реализованы; Apple build, измерения на трёх устройствах и полный compatibility handshake не выполнены. Остальные задачи ниже **TODO**. ID предназначены для issues; это Markdown-план. `P0` — обязательная основа, `P1` — основной результат, `P2` — оптимизация.
 
 | ID | Приоритет | Зависит от | Работа и точки изменения | Проверяемый результат |
 |---|---|---|---|---|
-| BC-001 | P0 | — | Hardware inventory, `bench/device-probe.py`, RPC `mem` | Все три узла имеют version/capability/memory profile без UDID в публичных логах |
+| BC-001 | P0 | — | **IN PROGRESS:** `backcluster doctor/profile`, `tools/backcluster/`, RPC `profile`; [инструкция](DIAGNOSTICS.md) | Код и socket tests готовы; приёмка трёх узлов ожидает Apple build и железо |
 | BC-002 | P0 | 001 | Cable payload bench, mobile signing и standalone app | RTT/throughput для обоих links, app budget без debugger, две независимые связи |
 | BC-003 | P0 | — | Model/draft/shard lock и GGUF metadata validation | Pinned revision, bytes/hash, template, layer map; mismatch блокируется |
 | BC-004 | P0 | 001,003 | Mac-only baseline, `serve.sh`, `bench/` | IQ4, 16k/32k/64k где помещается; одинаковые настройки, пять повторов |

@@ -543,6 +543,47 @@ static NSMutableDictionary *ane_mem() {
     }
     return r;
 }
+
+// BackCluster's additive, read-only control report. The byte counts are
+// observations, not allocation guarantees or a sum of independent pools.
+// Keep the existing mem response and binary protocols unchanged.
+static NSDictionary *backcluster_profile() {
+    NSProcessInfo *process = [NSProcessInfo processInfo];
+    NSOperatingSystemVersion os = process.operatingSystemVersion;
+    NSString *model = [SidecarRPC deviceModel];
+    int cores = 0; size_t size = sizeof cores;
+    id cpu = sysctlbyname("hw.physicalcpu", &cores, &size, nullptr, 0) == 0 && cores > 0
+        ? (id) @(cores) : (id) [NSNull null];
+    task_vm_info_data_t info = {};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    id footprint = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &info, &count) == KERN_SUCCESS
+        ? (id) @(info.phys_footprint) : (id) [NSNull null];
+    NSDictionary *metal = [SidecarRPC metalStats];
+    NSDictionary *bundle = [NSBundle mainBundle].infoDictionary;
+    return @{
+        @"document_kind" : @"backcluster_worker_profile", @"schema_version" : @1,
+        @"platform" : [model hasPrefix:@"iPad"] ? @"iPadOS" : @"iOS",
+        @"os_version" : [NSString stringWithFormat:@"%ld.%ld.%ld", (long) os.majorVersion,
+                         (long) os.minorVersion, (long) os.patchVersion],
+        @"hardware" : @{ @"model" : model ?: [NSNull null], @"cpu_cores" : cpu },
+        @"memory" : @{
+            @"physical_bytes" : @(process.physicalMemory),
+            @"process_footprint_bytes" : footprint,
+            @"process_available_bytes" : @(os_proc_available_memory()),
+            @"metal_recommended_bytes" : metal[@"recommendedWorkingSetBytes"] ?: [NSNull null],
+            @"metal_allocated_bytes" : metal[@"allocatedBytes"] ?: [NSNull null],
+        },
+        @"thermal_state" : @((int) process.thermalState),
+        @"runtime" : @{
+            @"app_version" : bundle[@"CFBundleShortVersionString"] ?: [NSNull null],
+            @"app_build" : bundle[@"CFBundleVersion"] ?: [NSNull null],
+            @"phone_attn_version" : @(pa::VERSION),
+            @"tail_protocol_version" : @(spt::PROTO_VERSION),
+            @"tail_state_format" : @(spt::STATE_FORMAT),
+        },
+        @"capabilities" : @[ @"memory_profile", @"remote_kv", @"tail_stage" ],
+    };
+}
 static MLComputeUnits ane_units(NSString *u) {
     if ([u isEqualToString:@"gpu"]) return MLComputeUnitsCPUAndGPU;
     if ([u isEqualToString:@"cpu"]) return MLComputeUnitsCPUOnly;
@@ -579,6 +620,7 @@ static id<MLFeatureProvider> ane_input(MLModel *m, double *flops, int *S_out) {
 
 static NSDictionary *ane_cmd(NSArray<NSString *> *a) {
     NSString *op = a.count ? a[0] : @"";
+    if ([op isEqualToString:@"profile"] && a.count == 1) return backcluster_profile();
     NSMutableDictionary *r = ane_mem();
     // every argument that names a file must stay inside Documents, and fetch may only download from the Mac over the cable
     // (CableOnly.h; tests/security/cable-policy-test.cpp)
@@ -926,7 +968,7 @@ static NSDictionary *ane_cmd(NSArray<NSString *> *a) {
         }
         return r;
     }
-    r[@"error"] = @"usage: ls | mem | load ALIAS FILE [ne|gpu|cpu|all] | run ALIAS N | loop ALIAS SECS | plan FILE [units] | unload ALIAS|all | sme [ARGS]";
+    r[@"error"] = @"usage: ls | mem | profile | load ALIAS FILE [ne|gpu|cpu|all] | run ALIAS N | loop ALIAS SECS | plan FILE [units] | unload ALIAS|all | sme [ARGS]";
     return r;
 }
 

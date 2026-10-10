@@ -8,14 +8,16 @@
 - Сохранены upstream code/history, license и оригинальный README.
 - Подготовлены audit, architecture, memory analysis, roadmap, backlog и hardware runbook.
 - Пример `profiles/apple-trio.example.json` является планом, не исполняемой конфигурацией.
+- Репозиторий опубликован: https://github.com/art9762/backcluster.
+- Начат BC-001: `backcluster doctor/profile`, read-only worker report, схема v1, socket regression tests и CI. Детали в [DIAGNOSTICS.md](DIAGNOSTICS.md).
 
 ## Не сделано
 
-Нет новых runtime features, Apple build, inference benchmarks, проверки signing/Thunderbolt/background GPU, скачанных weights или проверенных model hashes. Доступность 48 ГБ как единого пространства памяти не заявляется. Отдельного downstream engine fork пока нет. Удалённую публикацию parent проверить по фактическому git remote; сам этот документ её не подтверждает.
+Нет нового inference scheduler, Apple build, inference benchmarks, проверки signing/Thunderbolt/background GPU, скачанных weights или проверенных model hashes. Мобильный control runtime дополнен командой `profile`; binary inference protocols не менялись. Доступность 48 ГБ как единого пространства памяти не заявляется. Отдельного downstream engine fork пока нет.
 
 ## Следующее действие
 
-Прочитать `HARDWARE_RUNBOOK.md`, выполнить BC-001/002 на устройствах и закрепить модель BC-003. После baseline BC-004 сравнить Mac+iPad с Mac+iPhone. Не начинать с kernel rewrite или speculative decode через три устройства.
+Собрать app с новым `profile` на Mac, выполнить `doctor` и собрать host/pair/trio snapshots по `DIAGNOSTICS.md`. Затем выполнить BC-001/002 из `HARDWARE_RUNBOOK.md` на устройствах и закрепить модель BC-003. После baseline BC-004 сравнить Mac+iPad с Mac+iPhone. Не начинать с kernel rewrite или speculative decode через три устройства.
 
 При дальнейшей разработке читать актуальные repository instructions. Не менять pin движка случайно через submodule update remote. Перед первым engine change создать отдельный доступный fork и соблюдать его инструкции; коммиты parent и submodule публикуются отдельно.
 

@@ -1,0 +1,41 @@
+name: BackCluster diagnostics
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python3 -m unittest discover -s tests/backcluster -v
+      - run: ./backcluster --version
+
+  apple-security:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: tests/security/run.sh
+      - name: Check iOS worker Objective-C++ syntax
+        run: |
+          xcrun --sdk iphoneos clang++ -std=c++17 -fobjc-arc -fblocks -fsyntax-only \
+            -target arm64-apple-ios16.4 \
+            -Illama.cpp/include -Illama.cpp/ggml/include -Illama.cpp/ggml/src/ggml-metal \
+            ios/Backburner/Sidecar/RPCBridge.mm
