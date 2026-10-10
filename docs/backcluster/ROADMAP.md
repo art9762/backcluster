@@ -1,6 +1,6 @@
 # План работ
 
-План от 2026-10-09, цель Qwen3.8-27B. **P0 завершён; P1 начат 2026-10-10.** Работают программные diagnostics/profile инструменты BC-001; Apple build и аппаратная приёмка ещё не выполнены. Остальные этапы запланированы. Критерии ниже — требования BackCluster, а не измеренные результаты.
+План от 2026-10-09, цель Qwen3.8-27B. **P0 завершён; P1 начат 2026-10-10.** Работают diagnostics/profile, model lock, registry/admission estimates, payload link bench и Mac-only baseline CLI. Apple compilation/archive добавлены в CI; аппаратная приёмка ещё не выполнена. Команды: [PRE_HARDWARE.md](PRE_HARDWARE.md). Остальные этапы запланированы. Критерии ниже — требования BackCluster, а не измеренные результаты.
 
 ## Порядок
 

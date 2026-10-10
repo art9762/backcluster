@@ -11,13 +11,17 @@
 - Репозиторий опубликован: https://github.com/art9762/backcluster.
 - Начат BC-001: `backcluster doctor/profile`, read-only worker report, схема v1, socket regression tests и CI. Детали в [DIAGNOSTICS.md](DIAGNOSTICS.md).
 
+- Добавлены GGUF content lock, registry/compatibility, отдельные budget estimates, bounded link payload bench, Mac build/serve и SSE benchmark.
+- Сборка BackCluster имеет отдельные bundle ID/display name/IPA; framework identity публикуется worker из build header.
+- Полный software/hardware boundary и команды: [PRE_HARDWARE.md](PRE_HARDWARE.md).
+
 ## Не сделано
 
-Нет нового inference scheduler, Apple build, inference benchmarks, проверки signing/Thunderbolt/background GPU, скачанных weights или проверенных model hashes. Мобильный control runtime дополнен командой `profile`; binary inference protocols не менялись. Доступность 48 ГБ как единого пространства памяти не заявляется. Отдельного downstream engine fork пока нет.
+Нет нового inference scheduler, замеров inference на целевом железе, проверки signing/Thunderbolt/background GPU, скачанных weights или проверенного фактического model lock. Apple compilation/archive проверяются в CI; это не аппаратная приёмка. Мобильный control runtime дополнен командой `profile`; binary inference protocols не менялись. Доступность 48 ГБ как единого пространства памяти не заявляется. Отдельного downstream engine fork пока нет.
 
 ## Следующее действие
 
-Собрать app с новым `profile` на Mac, выполнить `doctor` и собрать host/pair/trio snapshots по `DIAGNOSTICS.md`. Затем выполнить BC-001/002 из `HARDWARE_RUNBOOK.md` на устройствах и закрепить модель BC-003. После baseline BC-004 сравнить Mac+iPad с Mac+iPhone. Не начинать с kernel rewrite или speculative decode через три устройства.
+Начать с [PRE_HARDWARE.md](PRE_HARDWARE.md): установить новый app на iPad/iPhone, выполнить `doctor`, собрать host/pair/trio snapshots, payload link samples и Mac-only SSE baseline. Затем выполнить BC-001/002 из `HARDWARE_RUNBOOK.md` на устройствах и закрепить модель BC-003. После baseline BC-004 сравнить Mac+iPad с Mac+iPhone. Не начинать с kernel rewrite или speculative decode через три устройства.
 
 При дальнейшей разработке читать актуальные repository instructions. Не менять pin движка случайно через submodule update remote. Перед первым engine change создать отдельный доступный fork и соблюдать его инструкции; коммиты parent и submodule публикуются отдельно.
 

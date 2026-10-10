@@ -8,7 +8,7 @@ MEMORY_KEYS = (
     "physical_bytes", "process_footprint_bytes", "process_available_bytes",
     "metal_recommended_bytes", "metal_allocated_bytes",
 )
-CAPABILITIES = {"memory_profile", "remote_kv", "tail_stage"}
+CAPABILITIES = {"memory_profile", "remote_kv", "tail_stage", "link_bench"}
 ERROR_CODES = {
     "timeout", "unexpected_eof", "reply_too_large", "invalid_reply",
     "connection_failed", "unsupported_profile", "invalid_worker_profile",
@@ -59,6 +59,7 @@ def normalize_worker(reply):
         "thermal_state": reply.get("thermal_state"),
         "runtime": {key: runtime.get(key) for key in (
             "app_version", "app_build", "phone_attn_version", "tail_protocol_version", "tail_state_format",
+            "control_protocol_version", "engine_commit",
         )},
         "capabilities": [c for c in reply.get("capabilities", []) if isinstance(c, str) and c in CAPABILITIES]
             if isinstance(reply.get("capabilities"), list) else [],
@@ -111,6 +112,11 @@ def device_errors(device):
         for key in ("phone_attn_version", "tail_protocol_version", "tail_state_format"):
             if runtime.get(key) is not None and not integer(runtime[key], 1):
                 errors.append("invalid runtime version")
+        if runtime.get("control_protocol_version") is not None and not integer(runtime["control_protocol_version"], 1):
+            errors.append("invalid control protocol version")
+        commit = runtime.get("engine_commit")
+        if commit is not None and (not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}|unknown", commit) is None):
+            errors.append("invalid engine commit")
     caps = device.get("capabilities")
     if not isinstance(caps, list) or any(not isinstance(c, str) or c not in CAPABILITIES for c in caps):
         errors.append("unknown capabilities")

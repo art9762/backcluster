@@ -533,7 +533,7 @@ struct ContentView: View {
 
     // MARK: text
 
-    static let appName = "Backburner"
+    static let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "BackCluster"
 
     private var chip: String {
         switch machine {

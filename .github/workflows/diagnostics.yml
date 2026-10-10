@@ -22,6 +22,10 @@ jobs:
           python-version: '3.11'
       - run: python3 -m unittest discover -s tests/backcluster -v
       - run: ./backcluster --version
+      - name: Exercise the exact native link benchmark implementation
+        run: |
+          c++ -std=c++17 -O1 -Wall -Wextra -pthread tests/backcluster/link-bench-test.cpp -o /tmp/bc-link-test
+          /tmp/bc-link-test
 
   apple-security:
     runs-on: macos-15
@@ -42,3 +46,30 @@ jobs:
             -target arm64-apple-ios16.4 \
             -Illama.cpp/include -Illama.cpp/ggml/include -Illama.cpp/ggml/src/ggml-metal \
             ios/Backburner/Sidecar/RPCBridge.mm
+
+  apple-build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build the pinned Mac server
+        run: ./backcluster build
+      - name: Check the compiled launcher options
+        run: |
+          llama.cpp/build-metal/bin/llama-server --help > /tmp/server-help.txt
+          for option in --load-mode --spec-type --alias --cache-type-k --cache-type-v; do
+            grep -q -- "$option" /tmp/server-help.txt
+          done
+      - name: Archive the complete iPhone and iPad app
+        run: IPA=1 JOBS=3 scripts/build-backcluster.sh
+      - name: Upload device-test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: BackCluster-device-build
+          path: ios/build/BackCluster.ipa
+          if-no-files-found: error
+          retention-days: 7

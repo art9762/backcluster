@@ -1,10 +1,10 @@
 # Backlog
 
-BC-001 **IN PROGRESS**: CLI `doctor/profile`, схема снимков, read-only mobile report и socket tests реализованы; Apple build, измерения на трёх устройствах и полный compatibility handshake не выполнены. Остальные задачи ниже **TODO**. ID предназначены для issues; это Markdown-план. `P0` — обязательная основа, `P1` — основной результат, `P2` — оптимизация.
+BC-001 **IN PROGRESS**: CLI `doctor/profile`, схема снимков, read-only mobile report и socket tests реализованы; Apple build, измерения на трёх устройствах и полный compatibility handshake не выполнены. BC-002/003/010/011/030 подготовлены программно частично; их аппаратная приёмка и runtime integration открыты. Остальные задачи ниже **TODO**. См. [PRE_HARDWARE.md](PRE_HARDWARE.md). ID предназначены для issues; это Markdown-план. `P0` — обязательная основа, `P1` — основной результат, `P2` — оптимизация.
 
 | ID | Приоритет | Зависит от | Работа и точки изменения | Проверяемый результат |
 |---|---|---|---|---|
-| BC-001 | P0 | — | **IN PROGRESS:** `backcluster doctor/profile`, `tools/backcluster/`, RPC `profile`; [инструкция](DIAGNOSTICS.md) | Код и socket tests готовы; приёмка трёх узлов ожидает Apple build и железо |
+| BC-001 | P0 | — | **IN PROGRESS:** `backcluster doctor/profile`, `tools/backcluster/`, RPC `profile`; [инструкция](DIAGNOSTICS.md) | Код и tests готовы; full Apple archive в CI; приёмка трёх узлов ожидает железо |
 | BC-002 | P0 | 001 | Cable payload bench, mobile signing и standalone app | RTT/throughput для обоих links, app budget без debugger, две независимые связи |
 | BC-003 | P0 | — | Model/draft/shard lock и GGUF metadata validation | Pinned revision, bytes/hash, template, layer map; mismatch блокируется |
 | BC-004 | P0 | 001,003 | Mac-only baseline, `serve.sh`, `bench/` | IQ4, 16k/32k/64k где помещается; одинаковые настройки, пять повторов |
@@ -40,3 +40,12 @@ BC-001 **IN PROGRESS**: CLI `doctor/profile`, схема снимков, read-on
 ## Что не делать в начале
 
 Не тратить первый этап на новый inference framework, свой редактор кода, облачный dashboard, обучение drafter, модели на сотни миллиардов параметров или background GPU workaround. Не фиксировать пропорции слоёв по одной только RAM. Не выдавать вспомогательный независимый LLM-agent на телефоне за distributed inference основной модели.
+
+## Подготовлено до аппаратной границы, 2026-10-10
+
+- BC-002: native control-port payload echo + CLI raw/summary + concurrent workers. Signing, actual route/link mode и standalone budgets ещё не измерены.
+- BC-003: local artifact content lock, GGUF metadata/layout/sha verification. Реальная модель, drafter/shard provenance и engine support не приняты.
+- BC-010: explicit private registry, live route и product/protocol/engine checks. Не является hardware authentication и пока не управляет upstream inference.
+- BC-011: conservative independent memory admission estimates, unknown/thermal rejection. Context state needs и live launch admission требуют измерений.
+- BC-030: versioned CLI, separate BackCluster app build и safe Mac-only launcher. Multi-worker product launch и offline installer ждут pair baseline.
+- BC-004/006: bounded local SSE benchmark подготовлен. Качество, tool round-trip, OpenCode config и cancellation на целевом runtime ещё не приняты.

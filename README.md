@@ -8,7 +8,7 @@
 BackCluster — downstream-проект на базе [StayLameBro/backburner](https://github.com/StayLameBro/backburner). Репозиторий объединяет исходный runtime, зафиксированную версию `llama.cpp` и план распределённого запуска модели между Mac, iPad и iPhone.
 
 > **Текущий статус · 2026-10-10**
-> Начат P1: работают CLI `doctor`/`profile`, проверка формата снимков и новый read-only профиль мобильного worker. Есть socket regression tests и CI. Планировщик и распределение весов ещё не реализованы; Apple build и сценарии на целевых устройствах пока не проверены.
+> Подготовлен CLI 0.2.0: diagnostics, GGUF lock, registry/admission estimates, payload link benchmark, Mac-only build/serve и SSE baseline. CI проверяет Python/C++ и Apple security, собирает Mac server и полный iPhone/iPad archive. Следующая обязательная граница — установка приложения и измерения на целевых устройствах; трёхстадийный inference пока не реализован.
 
 ## Зачем это нужно
 
@@ -32,7 +32,7 @@ git submodule update --init --recursive
 ./backcluster profile --output .backcluster/host-profile.json
 ```
 
-Затем выполните upstream baseline по [оригинальному руководству](README.upstream.md). Скрипты и команды upstream сохранены без переименований; отдельного `backcluster serve` пока нет.
+Продолжение: [сборка, фиксация модели и первые аппаратные тесты](docs/backcluster/PRE_HARDWARE.md). Есть отдельный `backcluster serve` для Mac-only baseline; pair/distributed launch пока использует проверяемые upstream сценарии.
 
 Сбор профиля iPad/iPhone, схема памяти, ограничения и exit codes описаны в [руководстве по диагностике](docs/backcluster/DIAGNOSTICS.md). Python 3.9+, без дополнительных пакетов.
 
@@ -43,6 +43,7 @@ git submodule update --init --recursive
 | Раздел | Назначение |
 | --- | --- |
 | [`docs/backcluster/AUDIT.md`](docs/backcluster/AUDIT.md) | Что уже есть в upstream и где нужны изменения |
+| [`docs/backcluster/PRE_HARDWARE.md`](docs/backcluster/PRE_HARDWARE.md) | Готовые команды и следующий аппаратный этап |
 | [`docs/backcluster/DIAGNOSTICS.md`](docs/backcluster/DIAGNOSTICS.md) | Работающие doctor/profile и сбор снимков устройств |
 | [`docs/backcluster/ARCHITECTURE.md`](docs/backcluster/ARCHITECTURE.md) | Роли устройств, режимы, протокол и восстановление |
 | [`docs/backcluster/MODEL_AND_MEMORY.md`](docs/backcluster/MODEL_AND_MEMORY.md) | Квантизации и бюджет памяти |

@@ -22,6 +22,14 @@
 #include "../../../phone-attn/pa-metal.mm"
 #include "../../../phone-attn/pa-ane.mm"
 #include "CableOnly.h"
+#include "LinkBench.h"
+
+#if __has_include("BackClusterEngine.h")
+#include "BackClusterEngine.h"
+#endif
+#ifndef BACKCLUSTER_ENGINE_COMMIT
+#define BACKCLUSTER_ENGINE_COMMIT "unknown"
+#endif
 #import <Security/Security.h>
 
 #import <Metal/Metal.h>
@@ -580,8 +588,10 @@ static NSDictionary *backcluster_profile() {
             @"phone_attn_version" : @(pa::VERSION),
             @"tail_protocol_version" : @(spt::PROTO_VERSION),
             @"tail_state_format" : @(spt::STATE_FORMAT),
+            @"control_protocol_version" : @1,
+            @"engine_commit" : @BACKCLUSTER_ENGINE_COMMIT,
         },
-        @"capabilities" : @[ @"memory_profile", @"remote_kv", @"tail_stage" ],
+        @"capabilities" : @[ @"memory_profile", @"remote_kv", @"tail_stage", @"link_bench" ],
     };
 }
 static MLComputeUnits ane_units(NSString *u) {
@@ -1006,7 +1016,14 @@ static void *ane_server_main(void *raw) {
         std::string buf;
         char c;
         while (recv(fd, &c, 1, 0) == 1) {
-            if (c != '\n') { buf.push_back(c); continue; }
+            if (c != '\n') {
+                if (buf.size() >= 4096) break;
+                buf.push_back(c); continue;
+            }
+            if (buf.compare(0, 9, "linkbench") == 0) {
+                bc_link::serve(fd, buf);
+                break; // dedicated binary transfer; never parse payload as a command
+            }
             @autoreleasepool {
                 NSString *line = [[NSString stringWithUTF8String:buf.c_str()] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                 NSArray *parts = [line componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];

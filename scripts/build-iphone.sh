@@ -20,6 +20,19 @@ if [[ "${IPA}" != 1 && -z "${TEAM}" ]]; then
   exit 1
 fi
 UDID="${UDID:-}"
+APP_BUNDLE_ID="${APP_BUNDLE_ID:-}"
+APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-Backburner}"
+IPA_NAME="${IPA_NAME:-Backburner}"
+if [[ ! "${IPA_NAME}" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]]; then
+  echo "invalid IPA name"; exit 1
+fi
+# BackCluster's advertised commit must describe the framework actually linked.
+EXPECTED_ENGINE="$(git -C "${ROOT}" ls-tree HEAD llama.cpp | awk '{print $3}')"
+ACTUAL_ENGINE="$(git -C "${LLAMA}" rev-parse HEAD)"
+if [[ "${ACTUAL_ENGINE}" != "${EXPECTED_ENGINE}" || -n "$(git -C "${LLAMA}" status --porcelain --untracked-files=no)" ]]; then
+  echo "engine must match the clean pinned submodule before an app can advertise compatibility"; exit 1
+fi
+printf '#pragma once\n#define BACKCLUSTER_ENGINE_COMMIT "%s"\n' "${ACTUAL_ENGINE}" > "${IOS}/Sidecar/BackClusterEngine.h"
 
 if [[ ! -d "${LLAMA}" ]]; then
   echo "missing ${LLAMA}"
@@ -176,6 +189,8 @@ if [[ "${IPA}" == 1 ]]; then
 else
   SIGN_ARGS=(-allowProvisioningUpdates DEVELOPMENT_TEAM="${TEAM}" CODE_SIGN_STYLE=Automatic)
 fi
+SIGN_ARGS+=("APP_DISPLAY_NAME=${APP_DISPLAY_NAME}" "INFOPLIST_KEY_CFBundleDisplayName=${APP_DISPLAY_NAME}" CURRENT_PROJECT_VERSION=5 MARKETING_VERSION=0.0.5)
+if [[ -n "${APP_BUNDLE_ID}" ]]; then SIGN_ARGS+=("PRODUCT_BUNDLE_IDENTIFIER=${APP_BUNDLE_ID}"); fi
 archive() {
   xcodebuild \
     -project Sidecar.xcodeproj \
@@ -219,10 +234,10 @@ if [[ "${IPA}" == 1 ]]; then
   codesign -f -s - --entitlements "${IOS}/Sidecar/Sidecar.entitlements" "${P}/Payload/Sidecar.app"
   codesign -d --entitlements - "${P}/Payload/Sidecar.app" 2>/dev/null | grep -q increased-memory-limit \
     || { echo "IPA is missing the increased-memory-limit entitlement"; exit 1; }
-  rm -f "${ROOT}/ios/build/Backburner.ipa"
-  (cd "${P}" && zip -qry "${ROOT}/ios/build/Backburner.ipa" Payload)
+  rm -f "${ROOT}/ios/build/${IPA_NAME}.ipa"
+  (cd "${P}" && zip -qry "${ROOT}/ios/build/${IPA_NAME}.ipa" Payload)
   rm -rf "${P}"
-  echo "ipa: ${ROOT}/ios/build/Backburner.ipa ($(du -h "${ROOT}/ios/build/Backburner.ipa" | cut -f1)). Install: docs/INSTALL-IPHONE.md"
+  echo "ipa: ${ROOT}/ios/build/${IPA_NAME}.ipa ($(du -h "${ROOT}/ios/build/${IPA_NAME}.ipa" | cut -f1)). Install: docs/INSTALL-IPHONE.md"
   exit 0
 fi
 
@@ -230,9 +245,9 @@ if [[ -n "${UDID}" ]] && xcrun devicectl device info details --device "${UDID}" 
   echo "installing onto ${UDID} (DDI may fail; install can still work)"
   xcrun devicectl device install app --device "${UDID}" "${APP}" || {
     echo "devicectl install failed. Open Finder, drag ${APP}, or use Apple Configurator."
-    exit 0
+    exit 1
   }
-  echo "installed. Open Backburner, keep it foreground, then scripts/serve.sh"
+  echo "installed. Open ${APP_DISPLAY_NAME}, keep it foreground, then follow docs/backcluster/PRE_HARDWARE.md"
 else
   echo "device ${UDID} not visible. Sidecar.app is ready to sideload."
 fi
