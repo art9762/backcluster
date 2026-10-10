@@ -7,7 +7,9 @@ while IFS= read -r -d '' script; do bash -n "$script"; done < <(git ls-files -z 
 scripts/check-listeners.sh
 tests/security/check-sensitive-test.sh
 python3 scripts/hooks/check-sensitive.py --all
-python3 scripts/hooks/check-sensitive.py --staged
+if ! git diff --cached --quiet; then
+  python3 scripts/hooks/check-sensitive.py --staged
+fi
 if command -v c++ >/dev/null; then
   BC_CHECK_TMP=$(mktemp -d)
   trap 'rm -rf "$BC_CHECK_TMP"' EXIT
