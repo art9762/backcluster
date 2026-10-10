@@ -25,6 +25,9 @@ jobs:
 
   apple-security:
     runs-on: macos-15
+    env:
+      # The runner defaults to Xcode 16.4; upstream uses Metal 4 (Xcode 26+).
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:

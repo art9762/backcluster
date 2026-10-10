@@ -17,7 +17,7 @@ Python 3.9+; сторонние Python-пакеты и интернет для �
 ```
 
 `doctor` проверяет Apple Silicon host, физическую RAM, checkout закреплённого
-engine, CMake, Xcode и iOS Metal toolchain. Незагруженный submodule и dirty или
+engine, CMake, Xcode 26+ и iOS Metal toolchain. Незагруженный submodule и dirty или
 неверный engine checkout не проходят проверку. На Linux CLI доступен для тестов,
 но host отмечается `unsupported`; фиктивных Mac-замеров не создаётся.
 
@@ -112,5 +112,5 @@ tests/security/run.sh
 Тесты используют настоящий локальный socket server: fragmented replies,
 EOF, timeout/slow-drip, size bounds, старый app, malformed profiles, privacy
 allowlist, null-значения и атомарную запись. CI запускает Python на Linux/macOS
-и весь существующий security suite плюс Objective-C++ syntax check worker на macOS. Это не сборка iOS-приложения и не
+и весь существующий security suite плюс Objective-C++ syntax check worker на macOS с Xcode 26.3 (upstream использует Metal 4). Это не сборка iOS-приложения и не
 замеры скорости инференса; Apple build и тест на целевых устройствах обязательны.

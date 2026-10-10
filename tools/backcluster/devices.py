@@ -100,13 +100,14 @@ def engine_status(root=ROOT):
 def doctor(endpoints, timeout=3.0):
     profile = collect_profile(endpoints, timeout)
     engine = engine_status()
+    xcode = re.search(r"^Xcode ([0-9]+)", run("xcodebuild", "-version"))
     checks = [
         {"name": "apple_silicon_host", "ok": profile["host"]["platform"] == "macOS"
          and profile["host"]["hardware"]["architecture"] == "arm64"},
         {"name": "physical_memory_measured", "ok": bool(profile["host"]["memory"]["physical_bytes"])},
         {"name": "engine_pin", "ok": engine["matches_pin"]},
         {"name": "cmake", "ok": shutil.which("cmake") is not None},
-        {"name": "xcode", "ok": bool(run("xcodebuild", "-version"))},
+        {"name": "xcode_26_or_newer", "ok": bool(xcode and int(xcode[1]) >= 26)},
         {"name": "metal_toolchain", "ok": bool(run("xcrun", "-sdk", "iphoneos", "-find", "metal"))},
     ]
     checks.extend({"name": "worker_" + w["alias"], "ok": w["status"] == "ok"} for w in profile["workers"])
