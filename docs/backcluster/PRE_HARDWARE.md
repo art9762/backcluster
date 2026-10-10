@@ -39,7 +39,7 @@ CI собирает complete device archive и выкладывает `BackClust
 DEVELOPMENT_TEAM=<локальный-team-id> UDID=<локальный-device-id> scripts/build-backcluster.sh
 ```
 
-По умолчанию новый bundle ID `app.backcluster.sidecar`, display name BackCluster. Для отдельных provisioning profiles можно переопределить `APP_BUNDLE_ID` локально. Installer upstream не вызывается. Приложение продолжает использовать upstream storage/tunnel semantics; поведение полного runtime проверяем после установки. При явной установке на устройство скрипт возвращает ошибку, если `devicectl install` не удался.
+По умолчанию новый bundle ID `app.backcluster.sidecar`, display name BackCluster. Для отдельных provisioning profiles можно переопределить `APP_BUNDLE_ID` локально. Installer upstream не вызывается. Helper `bundle-id.sh` ищет установленный BackCluster (включая AltStore suffix), затем Backburner; несколько совпадений требуют явного `BUNDLE_ID`. Он не выводит предполагаемый upstream bundle ID только по `DEVELOPMENT_TEAM`. Приложение продолжает использовать upstream storage/tunnel semantics; поведение полного runtime проверяем после установки. При явной установке на устройство скрипт возвращает ошибку, если `devicectl install` не удался.
 
 В worker profile добавлены `engine_commit` и `control_protocol_version=1`; commit берётся из дерева, из которого собран framework. Скрипт запрещает другой/dirty engine. Ручная сборка без generated build header сообщает `engine_commit=unknown` и не проходит registry compatibility. Legacy profile остаётся читаемым для diagnostics, но не проходит registry admission.
 

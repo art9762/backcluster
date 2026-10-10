@@ -6,6 +6,7 @@ import io
 import json
 import os
 import socket
+import subprocess
 import struct
 import sys
 import tempfile
@@ -276,6 +277,40 @@ class BenchTests(unittest.TestCase):
             path = Path(tmp)/'bad.json'; path.write_text('[]')
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(['bench', '--lock', str(path), '--prompt', str(path)]), 1)
+
+
+class BundleTests(unittest.TestCase):
+    def invoke(self, apps, override=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            executable = Path(tmp)/'xcrun'
+            executable.write_text("#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\nPath(sys.argv[sys.argv.index('--json-output')+1]).write_text(json.dumps({'result': {'apps': json.loads(os.environ['BC_TEST_APPS'])}}))\n")
+            executable.chmod(0o755)
+            env = dict(os.environ, PATH=tmp + os.pathsep + os.environ['PATH'],
+                       BC_TEST_APPS=json.dumps(apps), DEVELOPMENT_TEAM='fixture-team')
+            env.pop('BUNDLE_ID', None)
+            if override: env['BUNDLE_ID'] = override
+            script = Path(__file__).resolve().parents[2]/'scripts/bundle-id.sh'
+            return subprocess.run(['bash', str(script), 'fixture-device'], env=env, text=True, capture_output=True)
+
+    def test_select_installed_cluster_including_altstore_suffix(self):
+        apps = [{'name': 'Backburner', 'bundleIdentifier': 'app.backburner.sidecar'},
+                {'name': 'BackCluster', 'bundleIdentifier': 'app.backcluster.sidecar.fixture'}]
+        result = self.invoke(apps)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), 'app.backcluster.sidecar.fixture')
+
+    def test_ambiguous_cluster_requires_explicit_override(self):
+        apps = [{'name': 'BackCluster', 'bundleIdentifier': 'app.backcluster.one'},
+                {'name': 'BackCluster', 'bundleIdentifier': 'app.backcluster.two'}]
+        self.assertNotEqual(self.invoke(apps).returncode, 0)
+        result = self.invoke(apps, 'app.backcluster.two')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), 'app.backcluster.two')
+
+    def test_upstream_install_remains_usable(self):
+        result = self.invoke([{'name': 'Backburner', 'bundleIdentifier': 'app.backburner.sidecar'}])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), 'app.backburner.sidecar')
 
 
 if __name__ == '__main__': unittest.main()
