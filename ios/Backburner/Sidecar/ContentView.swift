@@ -19,6 +19,7 @@ private struct Service: Identifiable {
 }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var cable = ""
     @State private var machine = ""
     @State private var thermal = ProcessInfo.ThermalState.nominal
@@ -118,6 +119,14 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active && savedBrightness >= 0 {
+                brightnessRamp += 1
+                UIScreen.main.brightness = savedBrightness
+                dim = false
+            }
+            if phase == .active { lastTouch = Date() }
+        }
     }
 
     // MARK: what the phone is doing, in plain words
@@ -125,7 +134,7 @@ struct ContentView: View {
     // One story at a time, from what the Mac reports (its proxy: reading, thinking, writing, done; its server script: starting,
     // ready, stopped) and what this iPhone sees itself. A state holds for its whole phase: the pauses inside a long read (every
     // 2,048 tokens the Mac saves its place, ~2 s) and the stretch while the Mac writes never flip the screen to "nothing".
-    private enum Mode: Equatable { case loading, noCable, waiting, starting, activating, ready, readingTogether, readingAlone, writing }
+    private enum Mode: Equatable { case loading, noCable, noModel, waiting, starting, activating, ready, readingTogether, readingAlone, writing }
 
     // the Mac's server is up: it said so, or it is talking to this iPhone (the app was reopened while it ran)
     private var linked: Bool {
@@ -137,6 +146,7 @@ struct ContentView: View {
 
     private var mode: Mode {
         if cable.isEmpty { return .noCable }
+        if tail.state == "No model" && !holding && !linked { return .noModel }
         if !linked { return .waiting }
         if tail.state == "Loading" { return .loading }
         if macPhase == "starting" { return .starting }
@@ -156,6 +166,7 @@ struct ContentView: View {
         switch mode {
         case .loading: return "Opening the model"
         case .noCable: return "Plug into your Mac"
+        case .noModel: return "Install the worker model"
         case .waiting: return "Waiting for your Mac"
         case .starting: return "Your Mac is starting up"
         case .activating: return "Getting ready"
@@ -172,6 +183,8 @@ struct ContentView: View {
             return "This \(device) is opening its part of the model, the last \(phoneLayers) layers."
         case .noCable:
             return "Use a USB-C cable that carries data. A 10 Gb/s cable runs at full speed. The charge-only cable from the box won't work."
+        case .noModel:
+            return "The cable is connected. You can run device profiles and link tests now. Install this worker's model from your Mac before using split inference."
         case .waiting:
             return "Start the server on your Mac. This \(device) gets its \(phoneLayers) layers ready as soon as the server is up."
         case .starting:
@@ -215,7 +228,7 @@ struct ContentView: View {
         let held = Stat(value: count(Double(heldKeys)), label: "older tokens held", lit: true)
         let since = Int(Date().timeIntervalSince(macPhaseAt))
         switch mode {
-        case .noCable: return []
+        case .noCable, .noModel: return []
         case .loading, .activating:
             let p = mode == .loading ? loadProgress : Self.activationShown(activateAt, busy: activating)
             return [Stat(value: "\(Int((p * 100).rounded()))", unit: "%", label: mode == .loading ? "opened" : "in GPU memory", lit: true),
@@ -427,7 +440,7 @@ struct ContentView: View {
                     .transition(.opacity)
                 }
 
-                Text("Leave this open and unlocked. If you switch apps or lock the phone, your Mac carries on by itself. Tap anywhere to dim the screen.")
+                Text("Keep this app open and the device unlocked during inference. Locking or switching apps may interrupt requests that depend on this worker. Tap the screen to dim it.")
                     .font(.system(size: 13))
                     .foregroundStyle(mid)
                     .lineSpacing(2)
@@ -439,7 +452,8 @@ struct ContentView: View {
             .padding(.horizontal, 24)
             .padding(.top, 12)
             .padding(.bottom, 32)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
@@ -533,7 +547,7 @@ struct ContentView: View {
 
     // MARK: text
 
-    static let appName = "Backburner"
+    static let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "BackCluster"
 
     private var chip: String {
         switch machine {

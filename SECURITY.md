@@ -3,11 +3,11 @@
 ## Reporting a problem
 
 Please report security problems privately: on GitHub, **Security → Report a vulnerability** on this repository. Don't open a
-public issue for them. You'll get a reply within a few days, and credit in the fix unless you'd rather not.
+public issue for them. Include the affected revision and a minimal reproduction without credentials or device identifiers.
 
 ## What the phone app exposes
 
-Backburner's app runs four servers on the phone: ggml RPC (50052), the prefill tail (50060), a control port (50061) and the
+The inherited worker app runs four servers on the phone: ggml RPC (50052), the prefill tail (50060), a control port (50061) and the
 phone-held context (50062). Their protocols have no authentication of their own: whoever can connect can load models, write
 files into the app's Documents, and read and write GPU memory. So the app decides who can connect:
 
@@ -42,6 +42,4 @@ the app advertised itself over Bonjour. Update the app; until then, turn Wi-Fi o
 
 `scripts/install-hooks.sh` installs pre-commit, commit-msg and pre-push checks (`scripts/hooks/check-sensitive.py`). They
 refuse secrets and tokens, home-folder paths, device UDIDs, Apple team ids, device names, personal emails, LAN addresses,
-model and binary files, signing material, files over 5 MB, and commits from a non-noreply email. Anything else you never want
-committed (your name, your own emails, your devices' ids) goes in `.git/info/private-patterns`, which is never committed
-itself. `python3 scripts/hooks/check-sensitive.py --all` audits every tracked file.
+model and binary files, signing material, files over 5 MB, and commits from a non-noreply email. Register additional private strings with `python3 scripts/hooks/check-sensitive.py --private-add`; only keyed fingerprints are stored in `.git/info/`, with the key in the macOS Keychain. `python3 scripts/hooks/check-sensitive.py --all` audits every tracked file.

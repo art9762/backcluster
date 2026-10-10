@@ -1,11 +1,11 @@
 name: Ask for a device or a feature
-description: A device you want supported (another phone, iPad, Mac, PC, Android) or something Backburner should do
+description: A device you want supported (another phone, iPad, Mac, PC, Android) or something BackCluster should do
 labels: ["request"]
 body:
   - type: markdown
     attributes:
       value: |
-        docs/ROADMAP.md lists what is planned and what people have already asked for: a thumbs-up on an existing issue counts too.
+        docs/backcluster/ROADMAP.md lists what is planned and what people have already asked for: a thumbs-up on an existing issue counts too.
   - type: textarea
     id: ask
     attributes:

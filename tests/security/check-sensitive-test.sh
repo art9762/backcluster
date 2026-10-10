@@ -19,7 +19,7 @@ scripts/install-hooks.sh >/dev/null || bad "install-hooks"
 export BB_PRIVATE_KEY_HEX=$(printf '11%.0s' {1..32})
 printf 'Zebulon Quarry\nquarry@mail.invalid\n' | python3 scripts/hooks/check-sensitive.py --private-add >/dev/null
 PRIV="$(git rev-parse --git-common-dir)/info/private-hashes"
-[ -f "$PRIV" ] && [ "$(stat -f %Lp "$PRIV")" = 600 ] && ok || bad "private-hashes created 600"
+[ -f "$PRIV" ] && [ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$PRIV")" = 600 ] && ok || bad "private-hashes created 600"
 grep -qi 'zebulon\|quarry' "$PRIV" && bad "private-hashes holds plain text" || ok
 [ "$(wc -l < "$PRIV" | tr -d ' ')" = 2 ] && ok || bad "two fingerprints stored"
 echo "hello" > README && git add README && git commit -qm "first" && ok || bad "a clean commit is allowed"

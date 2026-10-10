@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="244" viewBox="0 0 920 244" role="img" aria-labelledby="title desc">
+  <title id="title">BackCluster</title>
+  <desc id="desc">Local intelligence across your Apple devices. Mac, iPad and iPhone.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0d1424"/><stop offset="1" stop-color="#172b38"/></linearGradient>
+    <linearGradient id="accent"><stop stop-color="#8ce4d2"/><stop offset="1" stop-color="#93b9ff"/></linearGradient>
+  </defs>
+  <rect width="920" height="244" rx="24" fill="url(#bg)"/>
+  <g fill="none" stroke="url(#accent)" stroke-width="3">
+    <rect x="58" y="77" width="62" height="89" rx="13"/>
+    <rect x="84" y="58" width="62" height="89" rx="13" fill="#142632"/>
+    <rect x="110" y="39" width="62" height="89" rx="13" fill="#142632"/>
+    <path d="M130 67h22M130 79h22M130 91h14" stroke-linecap="round"/>
+  </g>
+  <text x="212" y="105" fill="#eff6ff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="53" font-weight="700" letter-spacing="-2">BackCluster</text>
+  <text x="215" y="145" fill="#adc3d6" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="21">Local intelligence across your Apple devices.</text>
+  <text x="215" y="190" fill="#8ce4d2" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600" letter-spacing="3">MAC + IPAD + IPHONE</text>
+  <path d="M762 34v176M790 50v144M818 68v108M846 86v72" stroke="#84d5ca" stroke-opacity=".12" stroke-width="9" stroke-linecap="round"/>
+</svg>

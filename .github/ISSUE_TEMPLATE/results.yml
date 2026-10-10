@@ -1,5 +1,5 @@
 name: Post your results
-description: Share what Backburner did on your Mac and phone(s). Every device and number helps, slow ones too.
+description: Share what BackCluster did on your Mac and phone(s). Every device and number helps, slow ones too.
 title: "[Results] <Mac> + <phone(s)>"
 labels: ["results"]
 body:
@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thanks for testing! Fill in what you have; only the devices are required.
-        The numbers come from `bench/turn-bench.py` (README → Reproducing the numbers). Pasting its output as-is is perfect.
+        The numbers come from `bench/turn-bench.py` (README.upstream.md → Reproducing the numbers). Pasting its output as-is is perfect.
 
   - type: input
     id: mac
@@ -50,7 +50,7 @@ body:
     id: profile
     attributes:
       label: Device profile (optional)
-      description: Output of `bench/device-probe.py` with the phone(s) plugged in and Backburner open. It holds no names, ids or addresses.
+      description: Output of `./backcluster profile` with the phone(s) plugged in and BackCluster open. It holds no names, ids or addresses.
       render: json
 
   - type: textarea

@@ -243,6 +243,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Sidecar/sme_attn_ios.o",
 				);
+				APP_DISPLAY_NAME = Backburner;
 				INFOPLIST_KEY_CFBundleDisplayName = Backburner;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -276,6 +277,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Sidecar/sme_attn_ios.o",
 				);
+				APP_DISPLAY_NAME = Backburner;
 				INFOPLIST_KEY_CFBundleDisplayName = Backburner;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (

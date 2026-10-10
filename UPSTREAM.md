@@ -1,6 +1,6 @@
 # Provenance and sources
 
-Audit date: **2026-10-09**. This is a downstream planning snapshot, not a measured BackCluster implementation.
+Audit date: **2026-10-09**. The audit below records the planning baseline; subsequent implementation is documented in CHANGELOG.md. Target-device inference remains unmeasured.
 
 ## Reproducible source baseline
 
@@ -52,3 +52,7 @@ The GGUF publisher describes a changed tensor layout under familiar filenames. N
 ## Publication boundaries
 
 New planning files contain hardware classes and technical design, without device identifiers, signing material, private project contents or credentials. A downstream engine fork is a future deliverable of BC-020. No issue, pull request or message has been sent to upstream.
+
+## Downstream tooling
+
+The control CLI and BackCluster app preparation are implemented on top of the engine pin above. `scripts/install-upstream.sh` retains the original upstream installer; `install.sh` installs the local BackCluster CLI. Original benchmark rows and README remain historical upstream artifacts. See CHANGELOG.md for downstream behavior and hardware limits.

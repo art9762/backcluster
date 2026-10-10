@@ -19,6 +19,7 @@ prompt_n / cache_n, so cold and cached numbers stay separate.
 
   scripts/proxy.py --listen 8080 --upstream 8180 --cache DIR   (DIR = the server's --slot-save-path)
 """
+import contextlib
 import argparse, hashlib, http.client, http.server, json, os, socket, sys, threading, time
 
 ap = argparse.ArgumentParser()
@@ -175,6 +176,7 @@ def restore_reasoning(msgs):
 class State:
     msgs = None          # messages of the request now in the slot (None = unknown)
     reply = None         # what the model answered to it (content, reasoning_content), as streamed back
+    context_key = None   # tools/template/settings under which the slot was built
 
 
 def same_reply(m, reply):
@@ -185,6 +187,8 @@ def same_reply(m, reply):
             x = ''.join(p.get('text', '') for p in x if isinstance(p, dict))
         return (x or '').strip()
     if norm(m.get('content')) != norm(reply.get('content')):
+        return False
+    if (m.get('tool_calls') or []) != (reply.get('tool_calls') or []):
         return False
     rc = m.get('reasoning_content')
     return rc is None or norm(rc) == norm(reply.get('reasoning_content'))
@@ -213,10 +217,15 @@ def parse_reply(raw):
             content.append(dl.get('content') or '')
             reasoning.append(dl.get('reasoning_content') or '')
             for tc in dl.get('tool_calls') or []:
-                c = calls.setdefault(tc.get('index', 0), {'function': {'name': '', 'arguments': ''}})
+                c = calls.setdefault(tc.get('index', 0), {'id': '', 'type': 'function', 'function': {'name': '', 'arguments': ''}})
+                c['id'] += tc.get('id') or ''
+                if tc.get('type'):
+                    c['type'] = tc['type']
                 fn = tc.get('function') or {}
                 c['function']['name'] += fn.get('name') or ''
                 c['function']['arguments'] += fn.get('arguments') or ''
+    if not any(line.strip() == 'data: [DONE]' for line in text.splitlines()):
+        return None
     return {'content': ''.join(content), 'reasoning_content': ''.join(reasoning),
             'tool_calls': [calls[i] for i in sorted(calls)]}
 
@@ -243,23 +252,32 @@ def preamble_prefix(body):
     return pre[:cut] if cut > 0 else pre
 
 
+def context_key(body):
+    return h({k: v for k, v in body.items() if k not in ('messages', 'stream', 'stream_options', 'return_progress',
+                                                       'max_tokens', 'max_completion_tokens', 'n_predict')})
+
+
 def prepare(body):
     """Make the slot hold the longest saved state this request extends. Returns a short label for the log."""
     msgs = body.get('messages') or []
-    if State.msgs is not None and len(msgs) >= len(State.msgs) and msgs[:len(State.msgs)] == State.msgs:
+    key = context_key(body)
+    if (State.context_key == key and State.msgs is not None and len(msgs) > len(State.msgs)
+            and msgs[:len(State.msgs)] == State.msgs and same_reply(msgs[len(State.msgs)], State.reply)):
         return 'continue'
     ix = load_index()
     # the conversation leaving the slot: save it so a later request that continues it restores instead of re-reading
     if State.msgs and len(State.msgs) > 1:
-        name = f'conv-{h(State.msgs)}.bin'
+        name = f'conv-{h([State.context_key, State.msgs])}.bin'
         if slot('save', name):
             ix['conv'] = [c for c in ix['conv'] if c['file'] != name] + [{'file': name, 'n': len(State.msgs), 'hash': h(State.msgs),
-                                                                          'reply': State.reply}]
+                                                                          'reply': State.reply, 'context_key': State.context_key}]
             while len(ix['conv']) > args.keep_conv:
                 rm_state(ix['conv'].pop(0)['file'])
             save_index(ix)
     # a saved conversation this request continues (longest first)
     for c in sorted(ix['conv'], key=lambda c: -c['n']):
+        if c.get('context_key') != key:
+            continue
         if len(msgs) >= c['n'] and h(msgs[:c['n']]) == c['hash'] and os.path.exists(os.path.join(args.cache, c['file'])):
             # the saved state ends after the model's own reply; a history that rewrote that reply can't reuse it (a recurrent
             # model has no mid-sequence rollback), so only restore when the next assistant message is that reply
@@ -297,78 +315,90 @@ class H(http.server.BaseHTTPRequestHandler):
     def relay(self, body_bytes, watch=False, strip_progress=False):
         """strip_progress: the proxy asked the server for prompt_progress events (the client didn't): they feed the phone's
         end-to-end reading speed and are taken out of the stream the client sees."""
-        c = http.client.HTTPConnection('127.0.0.1', args.upstream, timeout=3600)
-        hdrs = {k: v for k, v in self.headers.items() if k.lower() not in ('host', 'content-length', 'connection')}
-        if body_bytes is not None:
-            hdrs['Content-Length'] = str(len(body_bytes))
-        c.request(self.command, self.path, body_bytes, hdrs)
-        r = c.getresponse()
-        self.send_response(r.status)
-        for k, v in r.getheaders():
-            if k.lower() not in ('transfer-encoding', 'connection', 'content-length'):
-                self.send_header(k, v)
-        self.send_header('Transfer-Encoding', 'chunked')
-        self.end_headers()
-        tail = b''
-        buf, phase, n, t_note, t_first = b'', 'reading', 0, 0.0, 0.0
-        while True:
-            chunk = r.read1(65536)
-            if not chunk:
-                break
-            out = chunk
-            if watch and PHONE.ip:   # SSE events: the first thinking / answer token ends the prompt read
-                buf += chunk
-                out = b''
-                while b'\n\n' in buf:
-                    ev, buf = buf.split(b'\n\n', 1)
-                    if not ev.startswith(b'data: {'):
+        with contextlib.closing(http.client.HTTPConnection('127.0.0.1', args.upstream, timeout=3600)) as c:
+            hdrs = {k: v for k, v in self.headers.items() if k.lower() not in ('host', 'content-length', 'connection')}
+            if body_bytes is not None:
+                hdrs['Content-Length'] = str(len(body_bytes))
+            try:
+                c.request(self.command, self.path, body_bytes, hdrs)
+                r = c.getresponse()
+            except (OSError, http.client.HTTPException):
+                self.upstream_status = 502
+                self.send_error(502, 'Local inference server is unavailable')
+                return b''
+            self.upstream_status = r.status
+            self.send_response(r.status)
+            for k, v in r.getheaders():
+                if k.lower() not in ('transfer-encoding', 'connection', 'content-length'):
+                    self.send_header(k, v)
+            self.send_header('Transfer-Encoding', 'chunked')
+            self.end_headers()
+            tail = b''
+            buf, phase, n, t_note, t_first = b'', 'reading', 0, 0.0, 0.0
+            while True:
+                chunk = r.read1(65536)
+                if not chunk:
+                    break
+                out = chunk
+                if watch and PHONE.ip:   # SSE events: the first thinking / answer token ends the prompt read
+                    buf += chunk
+                    out = b''
+                    while b'\n\n' in buf:
+                        ev, buf = buf.split(b'\n\n', 1)
+                        if not ev.startswith(b'data: {'):
+                            out += ev + b'\n\n'
+                            continue
+                        try:
+                            obj = json.loads(ev[6:])
+                        except ValueError:
+                            out += ev + b'\n\n'
+                            continue
+                        pp = obj.get('prompt_progress')
+                        if pp:
+                            # the whole prompt read, end to end: new tokens over the server's time so far (the phone shows this,
+                            # not its own layers' rate)
+                            new, ms = pp.get('processed', 0) - pp.get('cache', 0), pp.get('time_ms', 0)
+                            if new > 0 and ms > 0:
+                                PHONE.note('reading', new, new * 1000.0 / ms)
+                        d = (obj.get('choices') or [{}])[0].get('delta') or {}
+                        if pp and strip_progress:
+                            del obj['prompt_progress']
+                            ch = (obj.get('choices') or [{}])[0]
+                            if not (d or ch.get('finish_reason') or obj.get('timings')):
+                                continue   # a progress-only event: the client never asked for it
+                            ev = b'data: ' + json.dumps(obj, ensure_ascii=False).encode()
                         out += ev + b'\n\n'
-                        continue
-                    try:
-                        obj = json.loads(ev[6:])
-                    except ValueError:
-                        out += ev + b'\n\n'
-                        continue
-                    pp = obj.get('prompt_progress')
-                    if pp:
-                        # the whole prompt read, end to end: new tokens over the server's time so far (the phone shows this,
-                        # not its own layers' rate)
-                        new, ms = pp.get('processed', 0) - pp.get('cache', 0), pp.get('time_ms', 0)
-                        if new > 0 and ms > 0:
-                            PHONE.note('reading', new, new * 1000.0 / ms)
-                    d = (obj.get('choices') or [{}])[0].get('delta') or {}
-                    if pp and strip_progress:
-                        del obj['prompt_progress']
-                        ch = (obj.get('choices') or [{}])[0]
-                        if not (d or ch.get('finish_reason') or obj.get('timings')):
-                            continue   # a progress-only event: the client never asked for it
-                        ev = b'data: ' + json.dumps(obj, ensure_ascii=False).encode()
-                    out += ev + b'\n\n'
-                    p = 'thinking' if d.get('reasoning_content') else 'writing' if d.get('content') or d.get('tool_calls') else None
-                    if p:
-                        n += 1
-                        now = time.time()
-                        t_first = t_first or now
-                        if p != phase or now - t_note > 0.5:
-                            phase, t_note = p, now
-                            PHONE.note(phase, n, (n - 1) / (now - t_first) if now > t_first else 0)
-            if len(tail) < 8 << 20:
-                tail += chunk
-            if out:
-                self.wfile.write(b'%x\r\n%s\r\n' % (len(out), out))
-                self.wfile.flush()
-        if buf:   # a last event without its blank line
-            self.wfile.write(b'%x\r\n%s\r\n' % (len(buf), buf))
-        self.wfile.write(b'0\r\n\r\n')
-        self.wfile.flush()
-        c.close()
-        return tail
+                        p = 'thinking' if d.get('reasoning_content') else 'writing' if d.get('content') or d.get('tool_calls') else None
+                        if p:
+                            n += 1
+                            now = time.time()
+                            t_first = t_first or now
+                            if p != phase or now - t_note > 0.5:
+                                phase, t_note = p, now
+                                PHONE.note(phase, n, (n - 1) / (now - t_first) if now > t_first else 0)
+                if len(tail) < 8 << 20:
+                    tail += chunk
+                if out:
+                    self.wfile.write(b'%x\r\n%s\r\n' % (len(out), out))
+                    self.wfile.flush()
+            if buf:   # a last event without its blank line
+                self.wfile.write(b'%x\r\n%s\r\n' % (len(buf), buf))
+            self.wfile.write(b'0\r\n\r\n')
+            self.wfile.flush()
+            return tail
 
     def do_GET(self):
         self.relay(None)
 
     def do_POST(self):
-        n = int(self.headers.get('Content-Length', 0))
+        try:
+            n = int(self.headers.get('Content-Length', 0))
+        except ValueError:
+            self.send_error(400, 'Invalid Content-Length')
+            return
+        if not 0 <= n <= 16 << 20:
+            self.send_error(413, 'Request exceeds 16 MiB limit')
+            return
         raw = self.rfile.read(n)
         if not self.path.split('?')[0].endswith('/chat/completions'):
             self.relay(raw)
@@ -377,6 +407,9 @@ class H(http.server.BaseHTTPRequestHandler):
             body = json.loads(raw)
         except ValueError:
             self.relay(raw)
+            return
+        if not isinstance(body, dict) or not isinstance(body.get('messages'), list) or any(not isinstance(m, dict) for m in body['messages']):
+            self.send_error(400, 'Chat request requires an object with a messages array')
             return
         # the effort the client asked for, or --effort: Qwen3.8's template reads reasoning_effort (low / medium / xhigh) and
         # falls back to xhigh, the longest thinking, when it is missing; thinking off (enable_thinking false) is left alone
@@ -403,9 +436,19 @@ class H(http.server.BaseHTTPRequestHandler):
             except Exception as e:  # the cache must never break a request: fall through cold
                 what = f'cache error, cold: {e!r}'
             t_prep = time.time() - t0
-            tail = self.relay(raw, watch=True, strip_progress=want_progress)
+            try:
+                tail = self.relay(raw, watch=True, strip_progress=want_progress)
+            except (OSError, http.client.HTTPException):
+                # Partial generation has no complete recurrent-state boundary.
+                State.msgs = State.reply = State.context_key = None
+                PHONE.note('done', 0, 0)
+                self.close_connection = True
+                return
             State.msgs = body.get('messages')
             State.reply = parse_reply(tail)
+            State.context_key = context_key(body)
+            if self.upstream_status != 200 or State.reply is None:
+                State.msgs = State.reply = State.context_key = None
             if KEEP_REASONING and State.reply and State.reply.get('reasoning_content'):
                 REASONING[reply_key(State.reply['content'], State.reply['tool_calls'])] = State.reply['reasoning_content']
                 while len(REASONING) > 4096:
@@ -432,5 +475,6 @@ class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
 
-log(f'listening on 127.0.0.1:{args.listen} -> 127.0.0.1:{args.upstream}, cache {args.cache}, thinking effort {args.effort} unless the client sends one')
-Server(('127.0.0.1', args.listen), H).serve_forever()
+if __name__ == '__main__':
+    log(f'listening on 127.0.0.1:{args.listen} -> 127.0.0.1:{args.upstream}, cache {args.cache}, thinking effort {args.effort} unless the client sends one')
+    Server(('127.0.0.1', args.listen), H).serve_forever()

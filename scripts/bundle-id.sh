@@ -1,14 +1,14 @@
 #!/bin/bash
-# bundle-id.sh [UDID] - print the bundle id of the Backburner app on the wired iPhone. Used by phone-up/phone-relaunch/phone-tail.
+# bundle-id.sh [UDID] - print the installed BackCluster/Backburner bundle id on a wired device. Used by phone-up/phone-relaunch/phone-tail.
 #
 # Why: the id depends on how the app was installed. scripts/build-iphone.sh signs it as app.backburner.<your team id>;
 # AltStore (docs/INSTALL-IPHONE.md) installs the release IPA under its own id (app.backburner.sidecar.<team id>).
 #   1. BUNDLE_ID, if set
-#   2. app.backburner.$DEVELOPMENT_TEAM, if set
-#   3. the installed app named "Backburner" (devicectl), preferring an app.backburner.* id
+#   2. the installed BackCluster app (devicectl), including AltStore suffixes
+#   3. an installed Backburner app for upstream compatibility
+# Ambiguous installations require BUNDLE_ID. A team id alone does not identify the app.
 set -u
 [ -n "${BUNDLE_ID:-}" ] && { echo "$BUNDLE_ID"; exit 0; }
-[ -n "${DEVELOPMENT_TEAM:-}" ] && { echo "app.backburner.$DEVELOPMENT_TEAM"; exit 0; }
 
 UDID=${1:-${UDID:-}}
 if [ -z "$UDID" ]; then
@@ -17,7 +17,7 @@ if [ -z "$UDID" ]; then
 fi
 [ -n "$UDID" ] || { echo "bundle-id: no iPhone or iPad on the USB cable" >&2; exit 1; }
 
-J=$(mktemp -t backburner-apps)
+J=$(mktemp "${TMPDIR:-/tmp}/backcluster-apps.XXXXXX")
 trap 'rm -f "$J"' EXIT
 ID=
 for FLAGS in "" --include-default-apps; do   # developer-signed apps first (Xcode, AltStore), then every app
@@ -25,12 +25,13 @@ for FLAGS in "" --include-default-apps; do   # developer-signed apps first (Xcod
   ID=$(python3 - "$J" <<'EOF' 2>/dev/null
 import json, sys
 apps = json.load(open(sys.argv[1]))['result']['apps']
-ids = [a['bundleIdentifier'] for a in apps if a.get('name') == 'Backburner' or a.get('bundleIdentifier', '').startswith('app.backburner.')]
-ids.sort(key=lambda i: not i.startswith('app.backburner.'))
-print(ids[0] if ids else '')
+cluster = {a['bundleIdentifier'] for a in apps if a.get('name') == 'BackCluster' or a.get('bundleIdentifier', '').startswith('app.backcluster.')}
+upstream = {a['bundleIdentifier'] for a in apps if a.get('name') == 'Backburner' or a.get('bundleIdentifier', '').startswith('app.backburner.')}
+ids = cluster or upstream
+print(next(iter(ids)) if len(ids) == 1 else '')
 EOF
 )
   [ -n "$ID" ] && break
 done
-[ -n "$ID" ] || { echo "bundle-id: no Backburner app found on $UDID (unlock the phone; install: docs/INSTALL-IPHONE.md), or set BUNDLE_ID" >&2; exit 1; }
+[ -n "$ID" ] || { echo "bundle-id: no unique BackCluster/Backburner app found on $UDID (unlock the phone; install: docs/INSTALL-IPHONE.md), or set BUNDLE_ID" >&2; exit 1; }
 echo "$ID"

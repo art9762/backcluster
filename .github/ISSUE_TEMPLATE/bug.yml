@@ -30,7 +30,7 @@ body:
     id: profile
     attributes:
       label: Device profile
-      description: Output of `bench/device-probe.py` (no names, ids or addresses), or your Mac, phone(s), iOS and app version
+      description: Output of `./backcluster profile` (no names, ids or addresses), or your Mac, phone(s), iOS and app version
       render: json
     validations:
       required: true

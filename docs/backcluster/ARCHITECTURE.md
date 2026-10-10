@@ -93,4 +93,4 @@ Chunk имеет sequence number, диапазон token positions, размер
 
 Одна активная inference-сессия, текстовый coding workflow, проводная связь, ручной выбор проверенного профиля. Не входят: обучение модели, vision offload, tensor-parallel all-reduce, expert paging, фоновый мобильный GPU как обязательное условие, Android/Windows, arbitrary hot-plug без восстановления.
 
-Новые команды `backcluster doctor / profile / plan / serve / bench` — будущий CLI. Существующие scripts остаются способом воспроизведения upstream до BC-030.
+Команды `backcluster doctor / profile / model / plan / link-bench / build / serve / bench` реализованы для программной подготовки и Mac-only baseline; `plan` пока выдаёт estimates/blockers, а multi-worker inference launcher остаётся будущим этапом. См. [PRE_HARDWARE.md](PRE_HARDWARE.md).

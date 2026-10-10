@@ -14,3 +14,8 @@ bench/results/slots/
 bench/results/runs.jsonl
 build-worker/
 build-worker-android/
+.venv/
+.pytest_cache/
+*.egg-info/
+.backcluster/
+ios/Backburner/Sidecar/BackClusterEngine.h

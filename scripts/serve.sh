@@ -293,7 +293,10 @@ if [ -n "${PHONE_IP:-}" ]; then
       sleep 1
     done ) &
 fi
-trap 'kill $SRV $PRX 2>/dev/null; wait $SRV 2>/dev/null; phone_note stopped; exit 0' INT TERM
+trap 'kill $SRV $PRX 2>/dev/null; wait $SRV 2>/dev/null; phone_note stopped; exit 130' INT
+trap 'kill $SRV $PRX 2>/dev/null; wait $SRV 2>/dev/null; phone_note stopped; exit 143' TERM
 wait $SRV
+SERVER_STATUS=$?
 kill $PRX 2>/dev/null
 phone_note stopped
+exit "$SERVER_STATUS"

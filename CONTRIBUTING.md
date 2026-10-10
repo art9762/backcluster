@@ -1,54 +1,33 @@
-# Contributing to Backburner
+# Contributing to BackCluster
 
-Thanks for helping! Bug fixes, new devices (iPads, Android, more phones), kernels, docs and test results are all welcome.
+Submit changes and device results to [art9762/backcluster](https://github.com/art9762/backcluster). See [UPSTREAM.md](UPSTREAM.md) for source provenance. Original licenses and attribution remain intact.
 
-## The easiest contribution: results
+## Local workflow
 
-Run it on your hardware and [post your results](https://github.com/StayLameBro/backburner/issues/new?template=results.yml),
-good or bad. Numbers from Macs, phones and iPads we don't have are the most useful thing right now.
+1. Clone with `--recurse-submodules`. Keep the engine at the committed pin.
+2. Install checks with `scripts/install-hooks.sh`.
+3. Make a focused branch and add regression coverage for changed behavior.
+4. Run `scripts/check.sh`. On an Apple Silicon Mac, also run `tests/security/run.sh` and build affected app/runtime targets.
+5. Open a PR against `main`, explaining behavior, validation and remaining hardware gates.
 
-## Sending a change
+The CLI uses Python 3.9+ and the standard library. Keep it usable offline. Engine compilation, conversion and Apple builds have separate prerequisites; see [PRE_HARDWARE.md](docs/backcluster/PRE_HARDWARE.md).
 
-1. Fork the repo and make a branch.
-2. Keep one change per pull request, and say in the description what it does and how you measured it.
-3. Open a pull request against `main`. Changes land through reviewed pull requests only.
+## Required evidence
 
-For bigger changes (a new device type, a new engine, a new protocol), open an issue first so we can agree on the shape
-before you spend time on it.
+- Model math changes need greedy-output and numerical comparisons with the same weights, quantization and settings. A successful build is not an inference test.
+- Speed claims need hardware, command, model lock, launch receipt, raw repeats and before/after samples. Keep Mac-only working. Benchmark chunks are not token counts.
+- Plans are estimates. Unknown memory/compatibility must fail visibly; losing unique state must not silently fall back to an incomplete session.
+- Retain cable gates, loopback host endpoints and authenticated Wi-Fi tunnels. Networking changes also need Apple security and real-device exposure checks.
+- Update working commands and limitations. Keep future architecture separate from implemented behavior.
 
-## What a change has to show
+## Private local files
 
-- **Same answers.** Anything that touches the model's math (kernels, split prefill, the phone-held context) must keep greedy
-  output identical, or explain exactly where and why it differs. `bench/launch-bench.py` records greedy runs and
-  `bench/launch-quality.py --a <before> --b <after>` compares them; post its output in the pull request. For the
-  probability columns, run both sides as `fork-nospec`: with speculative decoding the server returns probabilities for the
-  first token only (#12), while the identical-tokens column covers every token either way.
-- **Measured speed.** Speed claims come with the command, the hardware, and before/after numbers from the same build and
-  settings (`bench/turn-bench.py`, `bench/session-bench.py`, `bench/long-bench.py`). Note anything else that was running.
-- **Nothing breaks without the phone.** `PHONE=0 scripts/serve.sh` (the Mac alone) must keep working.
-- **Security stays intact.** Every server the app runs must keep its connection check (cable only; Wi-Fi only through the
-  paired tunnel). `tests/security/run.sh` must pass, and a change to the app's networking also needs
-  `scripts/check-phone-exposure.py` run against a phone. See [SECURITY.md](SECURITY.md).
+Store reports and registries in ignored `.backcluster/`. Never commit credentials, signing data, device IDs, private addresses, weights or generated builds. Launch receipts contain local paths: review them before sharing. Do not bypass hooks.
 
-## Before your first commit
+Additional private strings can be registered with `python3 scripts/hooks/check-sensitive.py --private-add`. They are stored as fingerprints in `.git/info/`, with the key in the macOS Keychain; `scripts/install-hooks.sh` migrates the older plain-text format.
 
-Run `scripts/install-hooks.sh` once. It installs checks that refuse commits containing secrets, personal paths, device ids,
-personal emails, model or binary files, and commits made with a non-noreply email. Put anything else private (your name,
-your devices' ids) in `.git/info/private-patterns`, which is never committed. Don't bypass the checks with `--no-verify`.
+## Engine and licensing
 
-## Sign-off
+`llama.cpp/` is a pinned submodule. Publish engine changes in an accessible downstream fork before updating its URL/gitlink. A clean recursive clone must retrieve the exact commit. Do not incidentally run `submodule update --remote`.
 
-Add a sign-off line to each commit (`git commit -s`):
-
-    Signed-off-by: Your Name <you@example.com>
-
-It certifies that you wrote the change (or have the right to submit it) and that it can be shared under this project's
-license, as described in the [Developer Certificate of Origin](https://developercertificate.org/).
-
-## License and credit
-
-Backburner is MIT licensed, and contributions come in under the same MIT license. Your commits keep your name, and people
-who port Backburner to new devices or land significant work are credited in the README.
-
-Forks are welcome under the MIT license. If you start a separate project from it, please give it a different name and link
-back here.
+Contributions use MIT. Sign commits with `git commit -s` using a GitHub noreply address; sign-off follows the [Developer Certificate of Origin](https://developercertificate.org/). Preserve upstream copyright. See [SECURITY.md](SECURITY.md) for private reporting.
