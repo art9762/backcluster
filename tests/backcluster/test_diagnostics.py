@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from backcluster.cli import emit, endpoint, main, timeout_seconds
-from backcluster.devices import collect_profile, engine_status, host_profile
+from backcluster.devices import collect_profile, engine_status, host_profile, run
 from backcluster.profiles import normalize_worker, validate_profile
 from backcluster.rpc import Endpoint, MAX_REPLY_BYTES, ProbeError, request
 
@@ -100,6 +100,18 @@ class RpcTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_probe_loader_overrides_do_not_break_tool_identity(self):
+        with patch.dict('os.environ', {'DYLD_INSERT_LIBRARIES': 'bad', 'LD_PRELOAD': 'bad',
+                                      'DEVELOPER_DIR': '/fixture/xcode'}), \
+                patch('backcluster.devices.subprocess.run') as command:
+            command.return_value.returncode = 0
+            command.return_value.stdout = 'identity\n'
+            self.assertEqual(run('git', 'rev-parse', 'HEAD'), 'identity')
+        environment = command.call_args.kwargs['env']
+        self.assertNotIn('DYLD_INSERT_LIBRARIES', environment)
+        self.assertNotIn('LD_PRELOAD', environment)
+        self.assertEqual(environment['DEVELOPER_DIR'], '/fixture/xcode')
+
     def test_real_worker_collection_and_privacy(self):
         native = native_reply()
         native.update(device_name="private-device", endpoint="private-address", serial="private-serial")

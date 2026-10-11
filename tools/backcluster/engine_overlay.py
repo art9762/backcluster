@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from .artifacts import load_json
-from .devices import ROOT, engine_status
+from .devices import ROOT, engine_status, probe_environment
 
 
 def digest(path):
@@ -91,7 +91,7 @@ def prepare_engine(root=ROOT):
             archive = temporary / 'source.tar'
             with archive.open('wb') as output:
                 subprocess.run(['git', '-C', str(root / 'llama.cpp'), 'archive', manifest['base_commit']],
-                               stdout=output, check=True)
+                               stdout=output, check=True, env=probe_environment())
             source = temporary / 'source'
             source.mkdir()
             with tarfile.open(archive) as tar:
@@ -105,7 +105,7 @@ def prepare_engine(root=ROOT):
                     tar.extractall(source, members=members, filter='data')
                 else:
                     tar.extractall(source, members=members)
-            patch_env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(parent))
+            patch_env = dict(probe_environment(), GIT_CEILING_DIRECTORIES=str(parent))
             for patch in manifest['patches']:
                 subprocess.run(['git', 'apply', '--check', str(root / 'engine-patches' / patch['file'])],
                                cwd=source, env=patch_env, check=True)

@@ -243,7 +243,7 @@ class LaunchTests(unittest.TestCase):
         spec = self.spec()
         self.assertNotIn('partition', spec)
         self.assertEqual(spec['artifacts'][0]['kind'], 'model')
-        self.assertEqual(spec['argv'][spec['argv'].index('--model') + 1], str(self.source))
+        self.assertEqual(spec['argv'][spec['argv'].index('--model') + 1], str(self.source.resolve()))
 
     def test_inherited_endpoint_flags_never_enter_launch(self):
         with patch.dict('os.environ', {'LLAMA_KV_REMOTE': 'bad', 'LLAMA_SPLIT_MIDDLE': 'bad', 'DYLD_INSERT_LIBRARIES': 'bad'}):

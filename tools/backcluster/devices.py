@@ -1,5 +1,6 @@
 """Hardware facts only; never infer an inference budget from physical RAM."""
 import json
+import os
 import platform
 import re
 import shutil
@@ -14,9 +15,16 @@ from .rpc import ProbeError, request
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def probe_environment():
+    """Keep toolchain settings while excluding inherited dynamic loader hooks."""
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith(('DYLD_', 'LD_'))}
+
+
 def run(*args, timeout=10, cwd=None):
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                                env=probe_environment())
         return result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError, UnicodeError):
         return ""
