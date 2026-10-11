@@ -38,7 +38,13 @@ int main() {
 
     auto * a = ggml_new_tensor_2d(state.context, GGML_TYPE_F32, 4, 4);
     auto * b = ggml_new_tensor_2d(state.context, GGML_TYPE_F32, 4, 4);
-    auto * result = ggml_mul_mat(state.context, a, b);
+    // Hosted Macs expose a paravirtual GPU without SIMD-group matrix multiply.
+    // Addition still initializes and executes a real Metal compute pipeline.
+    auto * result = ggml_add(state.context, a, b);
+    if (!ggml_backend_supports_op(state.backend, result)) {
+        std::fprintf(stderr, "Metal smoke failed: f32 addition is unsupported\n");
+        return 1;
+    }
     auto * graph = ggml_new_graph_custom(state.context, 16, false);
     ggml_build_forward_expand(graph, result);
     state.buffer = ggml_backend_alloc_ctx_tensors(state.context, state.backend);
@@ -47,11 +53,13 @@ int main() {
         return 1;
     }
 
-    float identity[16] = {};
+    float increment[16];
     float input[16];
-    for (int i = 0; i < 4; ++i) identity[5 * i] = 2.0f;
-    for (int i = 0; i < 16; ++i) input[i] = float(i - 8);
-    ggml_backend_tensor_set(a, identity, 0, sizeof(identity));
+    for (int i = 0; i < 16; ++i) {
+        increment[i] = 1.5f;
+        input[i] = float(i - 8);
+    }
+    ggml_backend_tensor_set(a, increment, 0, sizeof(increment));
     ggml_backend_tensor_set(b, input, 0, sizeof(input));
     if (ggml_backend_graph_compute(state.backend, graph) != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "Metal smoke failed: graph execution\n");
@@ -60,12 +68,12 @@ int main() {
     float output[16];
     ggml_backend_tensor_get(result, output, 0, sizeof(output));
     for (int i = 0; i < 16; ++i) {
-        if (!std::isfinite(output[i]) || std::fabs(output[i] - 2.0f * input[i]) > 1e-5f) {
+        if (!std::isfinite(output[i]) || std::fabs(output[i] - (input[i] + 1.5f)) > 1e-5f) {
             std::fprintf(stderr, "Metal smoke failed: result[%d]=%g, expected %g\n",
-                         i, double(output[i]), double(2.0f * input[i]));
+                         i, double(output[i]), double(input[i] + 1.5f));
             return 1;
         }
     }
-    std::puts("Metal shader initialization and f32 matrix graph passed");
+    std::puts("Metal shader initialization and f32 addition graph passed");
     return 0;
 }
