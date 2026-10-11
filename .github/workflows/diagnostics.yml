@@ -79,12 +79,20 @@ jobs:
           python-version: '3.11'
       - name: Build the pinned Mac server
         run: ./backcluster build
-      - name: Check the compiled launcher options
+      - name: Check compiled options and initialize the Metal backend
         run: |
-          llama.cpp/build-metal/bin/llama-server --help > /tmp/server-help.txt
+          set -euo pipefail
+          llama.cpp/build-metal/bin/llama-server --help > /tmp/server-help.txt 2> /tmp/server-startup.txt
+          cat /tmp/server-startup.txt
           for option in --load-mode --spec-type --alias --cache-type-k --cache-type-v; do
             grep -q -- "$option" /tmp/server-help.txt
           done
+          # --help exits successfully even when shader compilation fails.
+          # Also execute a graph through an explicitly initialized Metal backend.
+          if grep -Eq 'ggml_metal_.*(failed to build|failed to create library)' /tmp/server-startup.txt; then
+            exit 1
+          fi
+          bash scripts/test-metal.sh
       - name: Archive the complete iPhone and iPad app
         run: IPA=1 JOBS=3 scripts/build-backcluster.sh
       - name: Upload device-test build

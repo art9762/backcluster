@@ -1,0 +1,15 @@
+diff --git a/ggml/src/ggml-metal/kernels/mul_mm.metal b/ggml/src/ggml-metal/kernels/mul_mm.metal
+index 4f6875a98..8dac20f03 100644
+--- a/ggml/src/ggml-metal/kernels/mul_mm.metal
++++ b/ggml/src/ggml-metal/kernels/mul_mm.metal
+@@ -1055,8 +1055,10 @@ template [[host_name("kernel_mul_mm_f32_f32_nc8")]]     kernel mul_mm_simd_t ker
+ template [[host_name("kernel_mul_mm_f32_f32_nc16")]]     kernel mul_mm_simd_t kernel_mul_mm_simd<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   float4x4,      1,     dequantize_f32,     float,  float4x4,  float, float2x4, 16, 4, 64, 4, 32, 2>;
+ template [[host_name("kernel_mul_mm_f16_f32_nc8")]]     kernel mul_mm_simd_t kernel_mul_mm_simd<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   half4x4,       1,     dequantize_f16,     half,   half4x4,   float, float2x4, 8, 4, 64, 4, 32, 2>;
+ template [[host_name("kernel_mul_mm_f16_f32_nc16")]]     kernel mul_mm_simd_t kernel_mul_mm_simd<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   half4x4,       1,     dequantize_f16,     half,   half4x4,   float, float2x4, 16, 4, 64, 4, 32, 2>;
++#if defined(GGML_METAL_HAS_BF16)
+ template [[host_name("kernel_mul_mm_bf16_f32_nc8")]]    kernel mul_mm_simd_t kernel_mul_mm_simd<bfloat, bfloat4x4, simdgroup_bfloat8x8, bfloat, bfloat2x4, simdgroup_bfloat8x8, bfloat4x4,     1,     dequantize_bf16,    bfloat, bfloat4x4, float, float2x4, 8, 4, 64, 4, 32, 2>;
+ template [[host_name("kernel_mul_mm_bf16_f32_nc16")]]    kernel mul_mm_simd_t kernel_mul_mm_simd<bfloat, bfloat4x4, simdgroup_bfloat8x8, bfloat, bfloat2x4, simdgroup_bfloat8x8, bfloat4x4,     1,     dequantize_bf16,    bfloat, bfloat4x4, float, float2x4, 16, 4, 64, 4, 32, 2>;
++#endif
+ template [[host_name("kernel_mul_mm_q1_0_f32_nc8")]]    kernel mul_mm_simd_t kernel_mul_mm_simd<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q1_0,    8,     dequantize_q1_0,    float,  float4x4,  float, float2x4, 8, 4, 64, 4, 32, 2>;
+ template [[host_name("kernel_mul_mm_q1_0_f32_nc16")]]    kernel mul_mm_simd_t kernel_mul_mm_simd<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q1_0,    8,     dequantize_q1_0,    float,  float4x4,  float, float2x4, 16, 4, 64, 4, 32, 2>;
+ template [[host_name("kernel_mul_mm_q2_0_f32_nc8")]]    kernel mul_mm_simd_t kernel_mul_mm_simd<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q2_0,    4,     dequantize_q2_0,    float,  float4x4,  float, float2x4, 8, 4, 64, 4, 32, 2>;

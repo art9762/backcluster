@@ -5,6 +5,7 @@
 - Add reproducible, hashed downstream engine patches without changing the published gitlink.
 - Implement native Qwen35 middle stage and three-stage compute, bounded framing, source/range/epoch checks and fail-closed recovery.
 - Fix residual M-RoPE positions and honor explicit Flash Attention disable; compare full and split CPU logits/greedy with f32/f16 residuals.
+- Guard BF16 narrow-tile Metal shaders on unsupported devices; require actual Metal backend initialization and matrix execution in Apple CI.
 - Add streaming host/middle/tail GGUF splitter, source-derived receipts, exact partition and transformed tensor verification.
 - Launch explicit pairs, pipeline and dual remote KV with fresh cable routes, loaded artifact hashes, build identity and independent peak memory budgets.
 - Compare private raw benchmark evidence; validate OpenAI SSE/JSON/reasoning and a fixed read/edit/test cycle.

@@ -5,6 +5,10 @@
     {
       "file": "0001-three-stage.patch",
       "sha256": "b4e0783f3022117b1cb0b10df955c03033f3c8a766b8cd4580b8d143c8880f2d"
+    },
+    {
+      "file": "0002-metal-bf16-guards.patch",
+      "sha256": "7ddd9eb72e19b3f1d46e20bdba170cdf3bea8c18eaa8d79c0ef8697eec5308ba"
     }
   ]
 }

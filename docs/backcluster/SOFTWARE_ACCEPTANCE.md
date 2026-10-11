@@ -42,7 +42,7 @@ PYTHONPATH=tools python3 -m backcluster.engine_overlay --build-id
 IPA=1 JOBS=3 scripts/build-backcluster.sh
 ```
 
-Apple CI включает Objective-C++ syntax, полный Mac server build и archive приложения. На Linux нет Apple SDK; успешные Linux checks не заменяют эти gates. Generated header при ручной сборке обязателен для strict admission: `unknown` не принимается как проверенная identity.
+Apple CI включает Objective-C++ syntax, полный Mac server build, настоящий Metal matrix graph и archive приложения. `scripts/test-metal.sh` требует рабочую shader library и проверяет 16 результатов F32 matmul через явно созданный Metal backend, затем повторяет с выключенным BF16 для older-device path. Код 0 от `--help` не считается подтверждением рабочей GPU library. На Linux нет Apple SDK; успешные Linux checks не заменяют эти gates. Generated header при ручной сборке обязателен для strict admission: `unknown` не принимается как проверенная identity.
 
 ## Shards и launch admission
 
