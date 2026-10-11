@@ -16,8 +16,8 @@
 #include "llama.h"
 #include "ggml-metal.h"
 // shared with the Mac client (llama-split-prefill); both must come from the same llama.cpp tree
-#include "../../../llama.cpp/tools/split-prefill/tail-server.h"
-#include "../../../llama.cpp/tools/split-prefill/ane-ffn.mm"
+#include "tools/split-prefill/tail-server.h"
+#include "tools/split-prefill/ane-ffn.mm"
 #include "../../../phone-attn/phone-attn.h"
 #include "../../../phone-attn/pa-metal.mm"
 #include "../../../phone-attn/pa-ane.mm"
@@ -29,6 +29,9 @@
 #endif
 #ifndef BACKCLUSTER_ENGINE_COMMIT
 #define BACKCLUSTER_ENGINE_COMMIT "unknown"
+#endif
+#ifndef BACKCLUSTER_ENGINE_BUILD_ID
+#define BACKCLUSTER_ENGINE_BUILD_ID "unknown"
 #endif
 #import <Security/Security.h>
 
@@ -44,6 +47,8 @@
 #include <sys/sysctl.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#import <CommonCrypto/CommonDigest.h>
 
 // scripts/sme/sme_attn.c, prebuilt as Sidecar/sme_attn_ios.o (linked via OTHER_LDFLAGS):
 //   xcrun -sdk iphoneos clang -c -O3 -target arm64-apple-ios16.4 -mcpu=apple-a18 -DSME_BENCH_MAIN -DSME_BENCH_NO_MAIN \
@@ -394,12 +399,121 @@ static std::atomic<bool> g_mac_activating { false };
 static pa::status g_pa_status;   // phone-attn's status (STATS; the mem op reads last_big)
 static std::atomic<pa::ane_engine *> g_pa_ane { nullptr };   // phone-attn's ANE page engine (the tail suspends it)
 
+// This receipt binds the exact file hashed BEFORE loading to the model metadata
+// actually loaded by the engine. Paths and filenames never leave the phone.
+static std::mutex g_tail_receipt_mu;
+static NSDictionary *g_tail_receipt = nil;
+static std::string g_tail_receipt_path;
+static struct stat g_tail_receipt_file = {};
+struct backcluster_file_identity {
+    struct stat file = {};
+    std::string hash;
+    bool valid = false;
+};
+static bool same_tail_file(const struct stat &a, const struct stat &b) {
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
+           a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+           a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec;
+}
+static bool lowercase_sha(const std::string &s, size_t count) {
+    return s.size() == count && std::all_of(s.begin(), s.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+static std::string hash_tail_file(const std::string &path, backcluster_file_identity &identity) {
+    identity.valid = false;
+    { std::lock_guard<std::mutex> lock(g_tail_receipt_mu); g_tail_receipt = nil; }
+    int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) return "tail artifact is unavailable";
+    struct stat before = {}, after = {}, named = {};
+    if (fstat(fd, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0) {
+        close(fd); return "invalid tail artifact";
+    }
+    CC_SHA256_CTX hash;
+    CC_SHA256_Init(&hash);
+    uint8_t block[64 * 1024];
+    uint64_t bytes = 0;
+    while (true) {
+        ssize_t n = read(fd, block, sizeof block);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) { close(fd); return "tail artifact hashing failed"; }
+        if (n == 0) break;
+        CC_SHA256_Update(&hash, block, (CC_LONG)n);
+        bytes += (uint64_t)n;
+    }
+    bool stable = fstat(fd, &after) == 0 && lstat(path.c_str(), &named) == 0 &&
+                  same_tail_file(before, after) && same_tail_file(before, named) && bytes == (uint64_t)before.st_size;
+    close(fd);
+    if (!stable) return "tail artifact changed while hashing";
+    uint8_t digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_Final(digest, &hash);
+    static const char hex[] = "0123456789abcdef";
+    identity.hash.clear(); identity.hash.reserve(64);
+    for (uint8_t b : digest) { identity.hash.push_back(hex[b >> 4]); identity.hash.push_back(hex[b & 15]); }
+    identity.file = before; identity.valid = true;
+    return "";
+}
+static id tail_artifact_receipt(void) {
+    NSDictionary *receipt;
+    {
+        std::lock_guard<std::mutex> lock(g_tail_receipt_mu);
+        struct stat current = {};
+        if (g_tail_receipt && (lstat(g_tail_receipt_path.c_str(), &current) != 0 ||
+            !same_tail_file(g_tail_receipt_file, current))) g_tail_receipt = nil;
+        receipt = g_tail_receipt;
+    }
+    if (!receipt) return [NSNull null];
+    std::lock_guard<std::mutex> lock(g_tail_status.mu);
+    NSMutableDictionary *live = [receipt mutableCopy];
+    live[@"state"] = [NSString stringWithUTF8String:g_tail_status.state.c_str()] ?: @"error";
+    return live;
+}
+
 + (NSString *)startTailPort:(int)port modelPath:(NSString *)modelPath {
     static dispatch_once_t once;
     dispatch_once(&once, ^{ llama_backend_init(); });
     spt::tail_server srv(modelPath.UTF8String, &g_tail_status, [](const std::string & s) {
         fprintf(stderr, "[tail] %s\n", s.c_str());
     }, std::string(NSTemporaryDirectory().UTF8String));
+    auto file_identity = std::make_shared<backcluster_file_identity>();
+    const std::string artifact_path = modelPath.UTF8String ?: "";
+    srv.on_before_load = [file_identity](const std::string &path) {
+        return hash_tail_file(path, *file_identity);
+    };
+    srv.on_load = [file_identity, artifact_path](llama_model *model) -> std::string {
+        struct stat after = {};
+        if (!file_identity->valid || lstat(artifact_path.c_str(), &after) != 0 ||
+            !same_tail_file(file_identity->file, after)) return "tail artifact changed while loading";
+        char value[256] = {};
+        std::string source;
+        if (llama_model_meta_val_str(model, "backcluster.source.sha256", value, sizeof value) > 0) source = value;
+        else if (llama_model_meta_val_str(model, "split.source_sha256", value, sizeof value) > 0) source = value;
+        int start = -1, end = -1;
+        if (llama_model_meta_val_str(model, "split.layer_start", value, sizeof value) > 0) start = atoi(value);
+        if (llama_model_meta_val_str(model, "split.layer_end", value, sizeof value) > 0) end = atoi(value);
+        else if (start >= 0) end = start + llama_model_n_layer(model);
+        const bool output_head = llama_model_meta_val_str(model, "split.no_head", value, sizeof value) <= 0 || atoi(value) == 0;
+        // Legacy tails may still run through v2, but cannot produce a complete
+        // identity receipt and therefore cannot pass strict cluster admission.
+        if (!lowercase_sha(source, 64) || !lowercase_sha(BACKCLUSTER_ENGINE_COMMIT, 40) ||
+            !lowercase_sha(BACKCLUSTER_ENGINE_BUILD_ID, 64) ||
+            start < 0 || end <= start || end - start != llama_model_n_layer(model)) return "";
+        NSDictionary *receipt = @{
+            @"artifact_sha256": [NSString stringWithUTF8String:file_identity->hash.c_str()],
+            @"source_sha256": [NSString stringWithUTF8String:source.c_str()],
+            @"engine_commit": @BACKCLUSTER_ENGINE_COMMIT,
+            @"engine_build_id": @BACKCLUSTER_ENGINE_BUILD_ID,
+            @"bytes": @((uint64_t)file_identity->file.st_size),
+            @"layer_start": @(start), @"layer_end": @(end), @"output_head": @(output_head),
+            @"context": @(llama_model_n_ctx_train(model)),
+        };
+        {
+            std::lock_guard<std::mutex> lock(g_tail_receipt_mu);
+            g_tail_receipt_path = artifact_path; g_tail_receipt_file = file_identity->file;
+            g_tail_receipt = receipt;
+        }
+        return "";
+    };
     // the tail runs: unload the ANE page models first (both need memory; the ANE reloads on the next decode). The unload waits
     // only while the tail (its GGUF's size) would not fit under the wired ceiling. The tail's residency is requested on a
     // background queue (PA_TAIL_PREWARM_ASYNC=0: inline), so the SYNC is answered while iOS wires it; its first graph takes the
@@ -590,8 +704,10 @@ static NSDictionary *backcluster_profile() {
             @"tail_state_format" : @(spt::STATE_FORMAT),
             @"control_protocol_version" : @1,
             @"engine_commit" : @BACKCLUSTER_ENGINE_COMMIT,
+            @"engine_build_id" : @BACKCLUSTER_ENGINE_BUILD_ID,
         },
         @"capabilities" : @[ @"memory_profile", @"remote_kv", @"tail_stage", @"link_bench" ],
+        @"loaded_tail" : tail_artifact_receipt(),
     };
 }
 static MLComputeUnits ane_units(NSString *u) {

@@ -1,6 +1,6 @@
 # Архитектура BackCluster
 
-Статус: **проект решения**, не описание уже реализованных возможностей. Основание — [аудит](AUDIT.md).
+Статус: частично реализовано в 0.4. Native pair/three-stage compute и явный remote-KV launcher имеют программные gates; целевая Apple связка не проверена. Разделы о weighted KV, combined offload и production distributed checkpoints описывают последующую работу. Основание — [аудит](AUDIT.md); актуальная матрица — [SOFTWARE_ACCEPTANCE.md](SOFTWARE_ACCEPTANCE.md).
 
 ## Роли и физическая топология
 
@@ -62,7 +62,7 @@ flowchart TD
 
 Registry хранит псевдонимы узлов, интерфейс/transport, capability set и последний успешный probe. Личные UDID/IP остаются в локальном некоммитящемся конфиге.
 
-Handshake следующей версии проверяет:
+Целевой полный handshake проверяет:
 
 - protocol/state versions, engine commit/build ID;
 - model hash, tokenizer/template identity, shard range и hash;
@@ -93,4 +93,4 @@ Chunk имеет sequence number, диапазон token positions, размер
 
 Одна активная inference-сессия, текстовый coding workflow, проводная связь, ручной выбор проверенного профиля. Не входят: обучение модели, vision offload, tensor-parallel all-reduce, expert paging, фоновый мобильный GPU как обязательное условие, Android/Windows, arbitrary hot-plug без восстановления.
 
-Команды `backcluster doctor / profile / model / plan / link-bench / build / serve / bench` реализованы для программной подготовки и Mac-only baseline; `plan` пока выдаёт estimates/blockers, а multi-worker inference launcher остаётся будущим этапом. См. [PRE_HARDWARE.md](PRE_HARDWARE.md).
+CLI реализует model/shard/partition, diagnostics, estimates, Mac/pair/pipeline/remote-KV launch, quality/bench/compare и OpenCode config. Native SPT stage extension согласует source identity/ranges/dimensions/epoch/request IDs; control receipt дополнительно сверяет actual artifact hash и engine build ID. Compute-split и remote KV одновременно не включаются. Python BCTX реализует отдельный transactional/state contract с atomic checkpoints/journal; он не является подключённой заменой native SPT и не означает production persistence API. Native launcher выключает slot cache/checkpoints и требует re-prefill0 после потери state owner. См. [PRE_HARDWARE.md](PRE_HARDWARE.md).

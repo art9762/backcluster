@@ -15,6 +15,11 @@ bad() { echo "check-listeners: $*" >&2; fail=1; }
 
 SERVERS=(ios/Backburner/Sidecar/RPCBridge.mm phone-attn/phone-attn.h llama.cpp/ggml/src/ggml-metal/phone-attn.h
          llama.cpp/tools/split-prefill/tail-server.h)
+if [ -n "${BACKCLUSTER_ENGINE_SOURCE:-}" ]; then
+  SERVERS+=("${BACKCLUSTER_ENGINE_SOURCE}/tools/split-prefill/tail-server.h")
+  cmp -s phone-attn/phone-attn.h "${BACKCLUSTER_ENGINE_SOURCE}/ggml/src/ggml-metal/phone-attn.h" || \
+    bad "patched engine phone-attn.h differs from the mobile worker"
+fi
 for f in "${SERVERS[@]}"; do
   [ -f "$f" ] || { bad "$f is missing"; continue; }
   # every accept( call (not common_sampler_accept etc.) needs a filter within the next 12 lines

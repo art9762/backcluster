@@ -7,11 +7,12 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 OUT=${TMPDIR:-/tmp}/bb-security-tests
 mkdir -p "$OUT"
+BC_SECURITY_ENGINE=$(python3 -m tools.backcluster.engine_overlay --source-path)
 xcrun clang++ -std=c++17 -O1 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
-  -Illama.cpp/include -Illama.cpp/ggml/include \
+  -I"$BC_SECURITY_ENGINE" -I"$BC_SECURITY_ENGINE/include" -I"$BC_SECURITY_ENGINE/ggml/include" \
   tests/security/cable-policy-test.cpp -o "$OUT/cable-policy-test"
 "$OUT/cable-policy-test"
-scripts/check-listeners.sh
+BACKCLUSTER_ENGINE_SOURCE="$BC_SECURITY_ENGINE" scripts/check-listeners.sh
 xcrun swiftc -O -parse-as-library -o "$OUT/tunnel-test" ios/Backburner/Sidecar/Tunnel.swift tests/security/tunnel-test.swift
 "$OUT/tunnel-test"
 tests/security/check-sensitive-test.sh

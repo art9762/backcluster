@@ -1,6 +1,6 @@
 # План работ
 
-План от 2026-10-09, цель Qwen3.8-27B. **P0 завершён; P1 начат 2026-10-10.** Работают diagnostics/profile, model lock, registry/admission estimates, payload link bench и Mac-only baseline CLI. Apple compilation/archive добавлены в CI; аппаратная приёмка ещё не выполнена. Команды: [PRE_HARDWARE.md](PRE_HARDWARE.md). Остальные этапы запланированы. Критерии ниже — требования BackCluster, а не измеренные результаты.
+План от 2026-10-09, цель Qwen3.8-27B. В 0.4 программно добавлены P2 fixtures/сравнения, явные pair/dual-KV launchers и native P5 three-stage прототип с численным CPU gate. P6 checkpoint/journal реализован как отдельный toolkit, native server integration ещё открыта. Для P1/P2/P3/P4/P5 остаются Apple/real-model gates; этапы целиком не закрыты. [Матрица текущих доказательств](SOFTWARE_ACCEPTANCE.md) · [Команды](PRE_HARDWARE.md). Критерии ниже — требования, не измеренные результаты.
 
 ## Порядок
 

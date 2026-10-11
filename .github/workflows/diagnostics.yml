@@ -46,10 +46,24 @@ jobs:
       - run: tests/security/run.sh
       - name: Check iOS worker Objective-C++ syntax
         run: |
+          BC_ENGINE_SOURCE=$(python3 -m tools.backcluster.engine_overlay --source-path --header ios/Backburner/Sidecar/BackClusterEngine.h)
           xcrun --sdk iphoneos clang++ -std=c++17 -fobjc-arc -fblocks -fsyntax-only \
             -target arm64-apple-ios16.4 \
-            -Illama.cpp/include -Illama.cpp/ggml/include -Illama.cpp/ggml/src/ggml-metal \
+            -I"$BC_ENGINE_SOURCE" -I"$BC_ENGINE_SOURCE/include" -I"$BC_ENGINE_SOURCE/ggml/include" -I"$BC_ENGINE_SOURCE/ggml/src/ggml-metal" \
             ios/Backburner/Sidecar/RPCBridge.mm
+
+  native-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build and compare full versus three-stage CPU inference
+        run: scripts/test-native-pipeline.sh --jobs 3
 
   apple-build:
     runs-on: macos-15
@@ -78,5 +92,24 @@ jobs:
         with:
           name: BackCluster-device-build
           path: ios/build/BackCluster.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+  opencode-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify pinned OpenCode config and actual read/edit/test client loop
+        run: python3 scripts/check-opencode.py
+      - name: Upload software client acceptance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCode-client-software-smoke
+          path: .backcluster/opencode-client-smoke.json
           if-no-files-found: error
           retention-days: 7

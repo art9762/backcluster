@@ -4,7 +4,7 @@
 // list, live sockets through cable_accept(), the servers' default loopback-only filters, and the fetch / path validators.
 #include "../../ios/Backburner/Sidecar/CableOnly.h"
 #include "../../phone-attn/phone-attn.h"
-#include "../../llama.cpp/tools/split-prefill/tail-server.h"
+#include "tools/split-prefill/tail-server.h"
 
 #include <cstdio>
 #include <thread>

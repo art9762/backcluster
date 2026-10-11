@@ -88,7 +88,8 @@ def inspect_gguf(path):
         tensor_count, kv_count = r.number('Q'), r.number('Q')
         if not 0 < tensor_count <= MAX_ITEMS or kv_count > MAX_ITEMS:
             raise ValueError('invalid GGUF counts')
-        metadata, keys = {}, set()
+        metadata, keys, tokenizer_entries = {}, set(), {}
+        vocab_size = None
         for _ in range(kv_count):
             key, kind = r.string(), r.number('I')
             if key in keys:
@@ -96,8 +97,22 @@ def inspect_gguf(path):
             keys.add(key)
             keep = (key in {'general.architecture', 'general.alignment', 'general.file_type', 'tokenizer.chat_template',
                             'split.layer_start', 'split.n_layer_full', 'split.count', 'split.no_head', 'split.no_ffn'}
-                    or key.endswith(('.block_count', '.nextn_predict_layers', '.full_attention_interval', '.context_length')))
+                    or key.endswith(('.block_count', '.nextn_predict_layers', '.full_attention_interval', '.context_length',
+                                     '.embedding_length', '.attention.head_count', '.attention.head_count_kv',
+                                     '.attention.key_length', '.attention.value_length', '.attention.recurrent_layers', '.vocab_size')))
+            value_start = f.tell()
             value = r.value(kind, keep)
+            if key.startswith('tokenizer.'):
+                value_end = f.tell()
+                f.seek(value_start)
+                raw = f.read(value_end - value_start)
+                f.seek(value_end)
+                encoded_key = key.encode('utf-8')
+                tokenizer_entries[key] = struct.pack('<Q', len(encoded_key)) + encoded_key + struct.pack('<I', kind) + raw
+                if key == 'tokenizer.ggml.tokens':
+                    if kind != 9 or len(raw) < 12 or struct.unpack('<I', raw[:4])[0] != 8:
+                        raise ValueError('invalid tokenizer token table')
+                    vocab_size = struct.unpack('<Q', raw[4:12])[0]
             if keep:
                 metadata[key] = value
         arch = metadata.get('general.architecture')
@@ -114,6 +129,7 @@ def inspect_gguf(path):
             raise ValueError('invalid GGUF alignment')
         layers, names, spans, types = {}, set(), [], Counter()
         shared = 0
+        embedding_bytes, output_weight_bytes, output_norm_bytes = 0, 0, 0
         tensor_index = hashlib.sha256()
         for _ in range(tensor_count):
             name, dims = r.string(), r.number('I')
@@ -144,6 +160,12 @@ def inspect_gguf(path):
                 layers[layer] = layers.get(layer, 0) + nbytes
             else:
                 shared += nbytes
+                if name == 'token_embd.weight':
+                    embedding_bytes = nbytes
+                elif name == 'output.weight':
+                    output_weight_bytes = nbytes
+                elif name == 'output_norm.weight':
+                    output_norm_bytes = nbytes
         if set(layers) != set(range(count)):
             raise ValueError('missing GGUF layers')
         data_start = (f.tell() + alignment - 1) // alignment * alignment
@@ -155,12 +177,28 @@ def inspect_gguf(path):
         template = metadata.get('tokenizer.chat_template')
         if template is not None and not isinstance(template, str):
             raise ValueError('unsupported chat-template metadata')
+        tokenizer_hash = hashlib.sha256()
+        for key in sorted(tokenizer_entries):
+            tokenizer_hash.update(tokenizer_entries[key])
         return {'architecture': arch, 'block_count': count, 'trunk_layers': count - nextn,
                 'nextn_layers': nextn, 'tensor_count': tensor_count,
                 'tensor_bytes': shared + sum(layers.values()), 'shared_tensor_bytes': shared,
                 'layer_tensor_bytes': [layers[i] for i in range(count)],
                 'tensor_types': dict(sorted(types.items())), 'tensor_index_sha256': tensor_index.hexdigest(),
+                'tokenizer_sha256': tokenizer_hash.hexdigest(),
                 'chat_template_sha256': hashlib.sha256(template.encode()).hexdigest() if template is not None else None,
+                'embedding_length': metadata.get(arch + '.embedding_length'),
+                'head_count': metadata.get(arch + '.attention.head_count'),
+                'head_count_kv': metadata.get(arch + '.attention.head_count_kv'),
+                'recurrent_layers': metadata.get(arch + '.attention.recurrent_layers'),
+                'key_length': metadata.get(arch + '.attention.key_length'),
+                'value_length': metadata.get(arch + '.attention.value_length'),
+                'vocab_size': vocab_size if vocab_size is not None else metadata.get(arch + '.vocab_size'),
+                'embedding_tensor_bytes': embedding_bytes,
+                'output_head_tensor_bytes': output_norm_bytes + (output_weight_bytes or embedding_bytes),
+                'output_weight_tensor_bytes': output_weight_bytes,
+                'output_norm_tensor_bytes': output_norm_bytes,
+                'mtp_tensor_bytes': sum(layers[i] for i in range(count - nextn, count)),
                 'context_length': metadata.get(arch + '.context_length'),
                 'full_attention_interval': metadata.get(arch + '.full_attention_interval'),
                 'split': {k: v for k, v in metadata.items() if k.startswith('split.')},
