@@ -19,3 +19,4 @@ build-worker-android/
 *.egg-info/
 .backcluster/
 ios/Backburner/Sidecar/BackClusterEngine.h
+local/
