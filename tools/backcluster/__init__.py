@@ -1,3 +1,3 @@
-"""BackCluster control tools. Inference remains in the pinned upstream engine."""
+"""BackCluster tools and reproducible downstream engine integration."""
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"

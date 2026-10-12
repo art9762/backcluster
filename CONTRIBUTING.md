@@ -7,7 +7,7 @@ Submit changes and device results to [art9762/backcluster](https://github.com/ar
 1. Clone with `--recurse-submodules`. Keep the engine at the committed pin.
 2. Install checks with `scripts/install-hooks.sh`.
 3. Make a focused branch and add regression coverage for changed behavior.
-4. Run `scripts/check.sh`. On an Apple Silicon Mac, also run `tests/security/run.sh` and build affected app/runtime targets.
+4. Run `scripts/check.sh`. For engine changes, run `scripts/test-native-pipeline.sh`; for client integration, run `python3 scripts/check-opencode.py`. On an Apple Silicon Mac, also run `tests/security/run.sh`, build affected app/runtime targets, and run `scripts/test-metal.sh` against the Mac build.
 5. Open a PR against `main`, explaining behavior, validation and remaining hardware gates.
 
 The CLI uses Python 3.9+ and the standard library. Keep it usable offline. Engine compilation, conversion and Apple builds have separate prerequisites; see [PRE_HARDWARE.md](docs/backcluster/PRE_HARDWARE.md).
@@ -28,6 +28,6 @@ Additional private strings can be registered with `python3 scripts/hooks/check-s
 
 ## Engine and licensing
 
-`llama.cpp/` is a pinned submodule. Publish engine changes in an accessible downstream fork before updating its URL/gitlink. A clean recursive clone must retrieve the exact commit. Do not incidentally run `submodule update --remote`.
+`llama.cpp/` is a pinned submodule. Project-owned engine changes may be stored as verified patches in `engine-patches/`; update its manifest and validate a clean materialized source with the native gate. Before changing the submodule URL/gitlink, publish the engine commit in an accessible downstream fork. A clean recursive clone must retrieve the exact base and reproduce the patched source. Do not incidentally run `submodule update --remote`.
 
 Contributions use MIT. Sign commits with `git commit -s` using a GitHub noreply address; sign-off follows the [Developer Certificate of Origin](https://developercertificate.org/). Preserve upstream copyright. See [SECURITY.md](SECURITY.md) for private reporting.

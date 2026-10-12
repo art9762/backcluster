@@ -1,121 +1,194 @@
-# Программная подготовка и следующая сессия на устройствах
+# Подготовка к аппаратной приёмке, BackCluster 0.4
 
-CLI 0.3.0 подготовлен для первого аппаратного этапа. Автоматические тесты проверяют форматы, отказные сценарии и transport, но не подтверждают работу модели на целевой связке. `hardware_validated=false`, `cluster_ready=false` и `plan.launch_ready=false` сохраняются намеренно.
+Есть Mac/pair/remote-KV/pipeline launchers, streaming shards, проверки качества и
+сравнения. Native CPU gate проверяет настоящий трёхстадийный forward на маленькой
+детерминированной Qwen35 с GDN и full attention. Это не проверка качества
+Qwen3.8-27B или Apple kernels. `hardware_validated=false` и offline
+`plan.launch_ready=false` сохраняются. Подробная матрица:
+[SOFTWARE_ACCEPTANCE.md](SOFTWARE_ACCEPTANCE.md).
 
-## Что реализовано
-
-| Команда | Что проверяет |
-|---|---|
-| `doctor`, `profile` | Host, worker, версии, наблюдения памяти; с registry также маршрут и совместимость |
-| `model` | SHA-256/bytes, immutable source revision, pin engine, GGUF v3, template hash, dtype layout, bytes каждого слоя |
-| `plan` | Явные роли, compatibility, отдельные memory estimates; печатает блокеры без запуска |
-| `link-bench` | 16 KiB, 1 MiB, 2600 KiB, целостность payload, upload+ack/download, пять повторов и warmup |
-| `build` | Собирает закреплённый Mac `llama-server` без автоматического обновления |
-| `serve` | Проверяет весь GGUF перед запуском Mac-only; loopback, draft off, mmap, q8 KV, одна сессия |
-| `bench` | Локальный streaming baseline, TTFT/wall time, usage token count, private raw rows и median/p95 |
-
-`model` записывает заявленное происхождение локального файла и проверяет его содержимое. Он не скачивает веса и не доказывает, что файл получен от указанного publisher. Изменение файла, metadata, bytes или engine pin делает `--check` и `serve` ошибкой. Парсер не поддерживает multipart GGUF и неизвестные tensor types; их нельзя молча пропускать. Размеры tensors берутся из их фактических shapes и storage types.
-
-Derived shards и drafter compatibility ещё требуют отдельного manifest и проверки на закреплённом engine после BC-003. Карта слоёв не заменяет проверку output tensors, MTP и численной корректности shard. `serve` отклоняет split artifacts.
-
-## 1. Получить рабочую ветку и собрать приложение
+## 1. Собрать один runtime для Mac и workers
 
 ```bash
-git fetch origin
-git switch main
-git pull --ff-only
 git submodule update --init --recursive
-./backcluster --version
+scripts/check.sh
+scripts/test-native-pipeline.sh
+# Apple Silicon Mac, Python 3.9+, CMake, Xcode 26+ и Metal toolchain:
 ./backcluster doctor --human
 ./backcluster build
 IPA=1 scripts/build-backcluster.sh
 ```
 
-Нужны Apple Silicon, Python 3.9+, CMake, Xcode 26+ и Metal toolchain. `doctor` до установки workers может быть неуспешным: это диагностический результат, а не причина считать проверку кластера пройденной.
+Engine gitlink сохранён. `engine-patches/manifest.json` задаёт точный base и hashes
+downstream patches. Сборка проверяет base/patches и материализует source в ignored
+`.backcluster/engine-source/`, не изменяя submodule. Cache сравнивается с
+независимой реконструкцией. Host/app публикуют одинаковый build ID. Изменённые
+patches, source или server/runtime binaries отвергаются. Если CMake старого
+`llama.cpp/build-metal` указывает другой source directory, убрать эту generated
+сборку перед первым build 0.4.
 
-CI собирает complete device archive и выкладывает `BackCluster-device-build` с `BackCluster.ipa`. Этот IPA ad-hoc signed для последующей установки через AltStore, не подписан Apple developer team. CI не подтверждает signing entitlement, app budget без debugger или запуск на твоих устройствах. Для своей подписи:
+Native gate работает на Linux, генерирует untrained веса без скачивания и
+проверяет f32/f16 residual, logits/greedy, append/reset, framing/identity/epoch и
+потерю обоих workers. Для software-only toolkit также:
+`./backcluster runtime-selftest`.
+
+IPA: `ios/build/BackCluster.ipa`. Для собственной подписи/установки:
 
 ```bash
-DEVELOPMENT_TEAM=<локальный-team-id> UDID=<локальный-device-id> scripts/build-backcluster.sh
+DEVELOPMENT_TEAM=<local-team-id> UDID=<local-device-id> scripts/build-backcluster.sh
 ```
 
-По умолчанию новый bundle ID `app.backcluster.sidecar`, display name BackCluster. Для отдельных provisioning profiles можно переопределить `APP_BUNDLE_ID` локально. Installer upstream не вызывается. Helper `bundle-id.sh` ищет установленный BackCluster (включая AltStore suffix), затем Backburner; несколько совпадений требуют явного `BUNDLE_ID`. Он не выводит предполагаемый upstream bundle ID только по `DEVELOPMENT_TEAM`. Приложение продолжает использовать upstream storage/tunnel semantics; поведение полного runtime проверяем после установки. При явной установке на устройство скрипт возвращает ошибку, если `devicectl install` не удался.
+Ad-hoc IPA для AltStore не доказывает entitlement или standalone budget.
+Workers держать foreground, без debugger. Manual build без generated identity
+header не проходит cluster compatibility. App bundle: `app.backcluster.sidecar`;
+device helpers поддерживают AltStore suffix и требуют явный выбор при ambiguity.
 
-В worker profile добавлены `engine_commit` и `control_protocol_version=1`; commit берётся из дерева, из которого собран framework. Скрипт запрещает другой/dirty engine. Ручная сборка без generated build header сообщает `engine_commit=unknown` и не проходит registry compatibility. Legacy profile остаётся читаемым для diagnostics, но не проходит registry admission.
-
-## 2. Первые profiles и два link tests
-
-Открыть приложение foreground, без debugger. Сначала подключить только одно устройство и выписать его cable IP из UI. Второе подключить после отдельной проверки. Перед командами задать локально `IPAD_CABLE_IP` и `IPHONE_CABLE_IP` по UI приложения:
+## 2. Снять profiles и задать роли
 
 ```bash
-./backcluster profile --worker "ipad=${IPAD_CABLE_IP}" --output .backcluster/ipad.json
-./backcluster profile --worker "iphone=${IPHONE_CABLE_IP}" --output .backcluster/iphone.json
 ./backcluster profile --worker "ipad=${IPAD_CABLE_IP}" --worker "iphone=${IPHONE_CABLE_IP}" --output .backcluster/trio.json
-./backcluster link-bench --worker "ipad=${IPAD_CABLE_IP}" --output .backcluster/link-ipad.json
-./backcluster link-bench --worker "iphone=${IPHONE_CABLE_IP}" --output .backcluster/link-iphone.json
-./backcluster link-bench --worker "ipad=${IPAD_CABLE_IP}" --worker "iphone=${IPHONE_CABLE_IP}" --concurrent --output .backcluster/link-trio.json
+./backcluster link-bench --worker "ipad=${IPAD_CABLE_IP}" --worker "iphone=${IPHONE_CABLE_IP}" --concurrent --output .backcluster/links.json
 ```
 
-Одна операция использует отдельное control connection; worker выделяет максимум 4 MiB и завершает передачу по общему deadline 10 s. Неверная версия, payload mismatch, EOF и timeout дают ошибку и сохраняются в отчёте. Тест не загружает модель, не меняет KV, не создаёт файл на worker и не добавляет listener. Сетевые cable/tunnel gates сохраняются.
+Скопировать `profiles/registry.example.json` в `.backcluster/registry.json`.
+Записать реальные cable IPv4, разные Mac interfaces, model identifiers,
+protocol versions и `engine_build_id` из worker profile; budgets/reserves —
+измеренные integer bytes. Null в примере намеренно запрещает launch.
 
-`upload_ack_ns` включает отправку и получение подтверждения полного payload; `download_ns` начинается после ack и заканчивается на последнем байте echo. Это effective application bandwidth, не физическая полоса USB. `round_trip_ns` измеряет полный payload round trip без connect/ready handshake. Link reports не доказывают прямой cable transport (`transport=unverified`) и не должны запускаться одновременно с inference. Два потока параллельны по workers, не являются duplex benchmark одного link.
-
-## 3. Явный registry после наблюдений
-
-Скопировать `profiles/registry.example.json` в `.backcluster/registry.json`. Пример намеренно не проходит validation: budgets/reserves равны null. Заменить IP, Mac interfaces, model identifiers и добавить измеренные integer bytes. Поле `allocation_budget_bytes` — предел **дополнительных** allocations в данной сессии; `reserve_bytes` вычитается из наименьшего доступного лимита. Не брать эти значения из 12 ГБ физической RAM.
-
-Registry проверяет разные cable interfaces и endpoints, `expected_model`, engine SHA и все protocol versions. Проверка live route выполняется до probe (`route -n get` должен показать заданный interface). Это local binding к классу устройства, не криптографическая hardware identity; два одинаковых iPad нельзя отличать только по `expected_model`. В этой связке iPad и iPhone имеют разные модели. Registry не выбирает первую строку discovery и не меняет маршруты.
+Роли: `remote_kv`, `tail_stage`, `middle_stage`, `idle`. Для пары нужны один tail
+и idle; для pipeline middle и tail; для remote KV один/два KV workers.
+Для экспериментов хранить отдельные registry-файлы. Порядок remote-KV workers
+определяет block-cyclic ownership. Default ports: control 50061, tail 50060,
+KV 50062.
 
 ```bash
 ./backcluster profile --registry .backcluster/registry.json --output .backcluster/trio.json
-./backcluster doctor --registry .backcluster/registry.json
-./backcluster link-bench --registry .backcluster/registry.json --concurrent --output .backcluster/link-trio.json
+./backcluster doctor --registry .backcluster/registry.json --human
 ```
 
-`plan` берёт минимум из explicit additional budget, process available, physical minus footprint и Metal recommended minus allocated, затем вычитает reserve. Неизвестное наблюдение, недостаточный бюджет или serious/critical/unknown thermal отклоняет estimate. Physical headroom не учитывает всех потребителей системы, поэтому этот расчёт не гарантирует отсутствие jetsam. Runtime/KV state needs измеряются отдельно. Снимок старше пяти минут добавляет blocker; cached snapshot никогда не разрешает live launch.
+Route проверяется до probe. Снимок старше пяти минут блокирует launch spec;
+live `serve` повторяет profile/identity/thermal/admission перед exec. Worker
+budget — дополнительный allocation limit; уже verified resident weights
+повторно не учитываются. `--host-state-bytes` и `--state-bytes alias=bytes`
+задают peak KV/recurrent/compute/transfer state отдельно от weights. Это
+операторские оценки, которые надо измерить. RAM устройств не суммируется.
 
-## 4. Зафиксировать локально скачанный GGUF
+Link bench измеряет 16 KiB/1 MiB/2600 KiB, warmup и raw repeats. Payload integrity
+обязательна. Effective bandwidth включает application transport; не объявляется
+физической полосой USB. Не запускать одновременно с inference.
 
-Основную модель выбрать и скачать по immutable revision из `UPSTREAM.md`. Убедиться, что это один полный GGUF поддерживаемой pinned engine архитектуры. Значения в команде ниже — локальные placeholders, не готовый lock:
+## 3. Закрепить source и shards
 
 ```bash
-./backcluster model --file /path/model.gguf --repository owner/model-repository --revision <40-hex-revision> --output .backcluster/model-lock.json
-./backcluster model --file /path/model.gguf --check .backcluster/model-lock.json
+./backcluster model --file "$MODEL" --repository "$MODEL_REPOSITORY" --revision "$MODEL_REVISION" --output .backcluster/model-lock.json
+./backcluster model --file "$MODEL" --check .backcluster/model-lock.json
 ```
 
-Путь не сохраняется в model lock; имя файла сохраняется. GGUF tensors не читаются в RAM целиком. Проверяются alignment, tensor spans/overlap, все layer indexes, metadata limits, shape и storage size известного типа. Чтение/hashing большого файла может занять несколько минут. Hash доказывает воспроизводимость, не поддержку модели.
+Нужны immutable 40-hex publisher revision и полный unsplit GGUF v3. Проверяются
+SHA-256/bytes, engine base, dtype/shape, tokenizer/template, tensor bytes слоёв,
+output/embedding/MTP. Lock не доказывает заявленное происхождение файла.
+Чтение/hashing выполняются потоково; multipart сначала объединить.
 
-## 5. Mac baseline и review plan
+Выбрать `L1`, `L2`, `TRUNK_LAYERS` по metadata и budgets. Границы кратны
+full-attention interval. Для трёх стадий:
 
 ```bash
-./backcluster serve --lock .backcluster/model-lock.json --file /path/model.gguf --context 16384 --dry-run
-./backcluster serve --lock .backcluster/model-lock.json --file /path/model.gguf --context 16384 --output .backcluster/launch.json
+./backcluster shard --file "$MODEL" --lock .backcluster/model-lock.json --start 0 --end "$L1" --role host --output .backcluster/host.gguf --manifest .backcluster/host-shard.json
+./backcluster shard --file "$MODEL" --lock .backcluster/model-lock.json --start "$L1" --end "$L2" --role middle --output .backcluster/middle.gguf --manifest .backcluster/middle-shard.json
+./backcluster shard --file "$MODEL" --lock .backcluster/model-lock.json --start "$L2" --end "$TRUNK_LAYERS" --role tail --output .backcluster/tail.gguf --manifest .backcluster/tail-shard.json
+./backcluster partition-check --manifest .backcluster/host-shard.json --manifest .backcluster/middle-shard.json --manifest .backcluster/tail-shard.json
+./backcluster shard-check --file .backcluster/middle.gguf --manifest .backcluster/middle-shard.json --source "$MODEL"
 ```
 
-CLI запускает бинарник напрямую, очищает inherited inference/proxy/loader overrides, выключает SME helpers, speculation и remote workers. Он не изменяет global sysctl, не выбирает worker автоматически и не скачивает dependencies. `--dry-run` проверяет identity файла и показывает argv, но не подтверждает сборку/память. `serve` требует Apple Silicon, clean engine pin и ранее собранный binary. mmap baseline может давать page-ins; после первого замера исследовать wired и SME отдельно.
+Manifest сохраняет source/tokenizer/template identity, global layer map и
+transform. Проверка с `--source` сравнивает фактические bytes каждого tensor.
+Middle без head, tail с head. MTP по умолчанию удалён; `--keep-mtp` только у tail.
+`scripts/split-gguf.py` поддерживает диапазоны и старый `-L`, без numpy.
 
-Во втором terminal, с фиксированным prompt и тем же запущенным server:
+Передать middle/tail соответствующим устройствам и запустить tail listener,
+как в [HARDWARE_RUNBOOK.md](HARDWARE_RUNBOOK.md). Worker хеширует файл до load,
+проверяет его неизменность и публикует `loaded_tail` без пути/имени. Изменение
+файла после load инвалидирует receipt. Launcher сверяет оба фактических hashes.
+
+## 4. Baseline, пары и pipeline
 
 ```bash
-./backcluster bench --lock .backcluster/model-lock.json --prompt bench/prompt.txt --repeats 5 --tokens 256 --output .backcluster/baseline-16k.json
+./backcluster serve --lock .backcluster/model-lock.json --file "$MODEL" --context 16384 --output .backcluster/mac-launch.json
+# Во втором terminal:
+./backcluster quality --lock .backcluster/model-lock.json --launch .backcluster/mac-launch.json --tokens 512 --output .backcluster/mac-quality.json
+./backcluster bench --lock .backcluster/model-lock.json --launch .backcluster/mac-launch.json --prompt bench/prompt.txt --repeats 5 --tokens 256 --output .backcluster/mac-bench.json
 ```
 
-Server alias: `backcluster-<первые 16 hex SHA256>`. Bench запрашивает именно его, но сохраняет `server_identity_verified=false`: OpenAI API сам по себе не доказывает hash загруженных весов или engine. Для сравнения необходимо приложить launch receipt, lock и source revision. Повторить с `serve --context 32768`, только если 16k проходит бюджет. Requests sequential, один warmup отдельно от пяти measured repeats. В report нет prompt/output text; есть их hashes. TTFT включает reasoning и tool-call output. `output_hash_format=normalized_choices_v1` учитывает текст, reasoning и функции инструментов независимо от разбиения SSE; случайные tool-call IDs исключены. Эти hashes не сравниваются с raw-text hashes старого runner. Token count берётся из SSE usage; при его отсутствии остаётся null, chunks не объявляются токенами. Accepted tokens/s — токены на полный wall time, включая prefill; это не pure decode speed. Ошибка stream/deadline сохраняет неуспешную строку. Server может не сразу заметить закрытие сокета; фактическая cancellation остаётся аппаратной проверкой BC-006.
+Endpoint `http://127.0.0.1:8080/v1`, alias `backcluster-<16 hex model SHA-256>`.
+Одна сессия, q8 KV, drafter/speculation/SME off, loopback, без sysctl/discovery.
+`--dry-run` выдаёт private receipt без exec.
 
-Review plan на свежем snapshot требует явных host budget/reserve в байтах:
+Для пары создать tail `[L1,TRUNK_LAYERS)` и registry с одним `tail_stage`.
+`--mode split-prefill` хранит полную модель на Mac и offloads большие prefills;
+`--mode capacity` (alias `split-decode`) отправляет каждый ubatch на tail.
+Задать snapshot, host budget/reserve/state, worker state, `--split-layer`,
+`--tail-file`, `--tail-manifest`.
+
+Полный pipeline:
 
 ```bash
-./backcluster plan --lock .backcluster/model-lock.json --profile .backcluster/trio.json --registry .backcluster/registry.json --mode remote-kv --host-budget-bytes <measured-budget> --host-reserve-bytes <reserve> --state-bytes ipad=<measured-state> --state-bytes iphone=<measured-state> --output .backcluster/plan.json
+./backcluster serve --mode pipeline --lock .backcluster/model-lock.json --file "$MODEL" \
+  --registry .backcluster/pipeline-registry.json --profile .backcluster/trio.json \
+  --host-budget-bytes "$HOST_BUDGET" --host-reserve-bytes "$HOST_RESERVE" --host-state-bytes "$HOST_STATE" \
+  --state-bytes "ipad=$IPAD_STATE" --state-bytes "iphone=$IPHONE_STATE" \
+  --split-layer "$L1" --middle-end "$L2" \
+  --middle-file .backcluster/middle.gguf --middle-manifest .backcluster/middle-shard.json \
+  --tail-file .backcluster/tail.gguf --tail-manifest .backcluster/tail-shard.json \
+  --context 16384 --output .backcluster/pipeline-launch.json
 ```
 
-Одна assignment у Mac включает все веса; estimates не изображают реализованный capacity scheduler. `plan` exit 0 означает корректный отчёт, а не разрешение запуска. Model/profile/link/serve/bench errors дают 1; argparse errors дают 2. Неуспешный `build` даёт 1 с кодом неуспешной команды в сообщении; Ctrl-C до exec даёт 130. После exec сервер сохраняет свой exit code.
+Host использует полный GGUF на диске; удалённые tensors остаются CPU/mmap,
+локальный decode graph их не выполняет. Host derived shard служит verification,
+а не входом launcher. Реальное снижение resident RAM и page-ins измерить на Mac.
+Контекст compute-split ограничен launcher до 65536; context shifting отключён.
+Потеря unique stage завершает запрос, продолжение требует reset/re-prefill0.
 
-## Следующая обязательная граница
+`--mode remote-kv` требует один/два KV workers и `--total-context` больше локального
+`--context`. Проверяются head geometry, точное число block-cyclic positions и
+минимальные KV bytes каждого worker. Compute-split+remote KV отвергается.
 
-Дальнейшие этапы требуют devices: установить app и проверить entitlement/budget standalone, собрать live profiles/link samples, запустить один forward, закрепить фактический model artifact и сравнить Mac-only с каждой парой. Затем выбрать роли и split по latency/memory. До этого BC-012/021/023/024 и полноценный OpenCode offline acceptance остаются открытыми. Трёхстадийного inference и объединённого пула 48 ГБ ещё нет.
+`plan` перебирает capacity boundaries по реальным tensor bytes; требует
+`--host-state-bytes` для feasible estimate. Pipeline задаётся `--split-layer`
+и `--middle-end`. Он остаётся оценкой, не разрешением пропустить live checks.
+Errors: 1; argparse: 2; Ctrl-C до exec: 130; после exec exit code сохраняет server.
 
-Все локальные reports писать в ignored `.backcluster/`. Launch receipt содержит путь к весам, registry — адреса/interfaces; проверить их перед публикацией. Existing `bench/results/` — historical upstream data; новый runner его не меняет.
+## 5. Сравнение и OpenCode
 
-## Проверки разработки
+После того же quality gate получить candidate benchmark с его launch receipt:
 
-`scripts/check.sh` запускает Python regression tests, shell syntax checks, listener lint, sensitive-data hook tests и native C++ payload tests. `doctor --human` выводит читаемые результаты с подсказками; `--output` при этом сохраняет JSON. Новый `install.sh` устанавливает CLI из текущего checkout. Старый downloader сохранён как `scripts/install-upstream.sh` и относится к upstream, а не к выпуску BackCluster.
+```bash
+./backcluster bench-compare --baseline .backcluster/mac-bench.json --candidate .backcluster/pipeline-bench.json --output .backcluster/comparison.json
+./backcluster opencode-config --lock .backcluster/model-lock.json --context 16384 --client-version "$OPENCODE_VERSION" --output .backcluster/opencode.json
+OPENCODE_CONFIG="$PWD/.backcluster/opencode.json" opencode
+```
+
+Model/build/prompt/context/sampling должны совпадать. Raw medians пересчитываются;
+при output/token mismatch speed ratio не выдаётся. Placement/batch/split
+differences перечислены; tuning внутри одного режима требует
+`--allow-runtime-changes`. Usage берётся из API, SSE chunks не считаются токенами.
+TTFT/wall accepted tok/s не является pure decode rate. Reports не содержат prompt
+или output text; model alias не доказывает loaded weights другого процесса.
+
+`quality` проверяет JSON/SSE, отдельное reasoning и фиксированный read/edit/test
+цикл в tempdir. Закрытие stream не доказывает остановку GPU. OpenCode config
+поддерживает явную stable 1.x; другие схемы требуют проверки. Настоящий
+OpenCode 1.19.0 принял config в software check; это не аппаратный coding loop.
+`--reasoning` включать после наблюдения отдельного reasoning output.
+
+## Границы
+
+Осталась аппаратная приёмка реализованных режимов: реальная модель, Apple
+kernels, memory/thermal/link, signing, OpenCode и длительная нагрузка.
+Weighted KV, compute-split+remote KV и distributed speculation ещё не реализованы.
+BCTX durable checkpoints/journal — проверенный отдельный toolkit; production
+native OpenAI checkpoint/sampler/transcript integration остаётся программной
+работой. В launcher native slot cache/checkpoints выключены.
+
+Локальные weights/registry/reports хранить в ignored `.backcluster/`.
+Launch receipts содержат пути/endpoints: проверить перед публикацией.
+Полная последовательность: [HARDWARE_RUNBOOK.md](HARDWARE_RUNBOOK.md).

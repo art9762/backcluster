@@ -7,12 +7,12 @@
 # JOBS=N limits parallel compile jobs (default: all cores). Output: build-worker[-android]/bin/
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LLAMA="${ROOT}/llama.cpp"
 TARGET="${1:-}"
 NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 JOBS="${JOBS:-$NCPU}"
-[ -f "${LLAMA}/CMakeLists.txt" ] || { echo "missing ${LLAMA}: git submodule update --init" >&2; exit 1; }
 command -v cmake >/dev/null || { echo "cmake is missing" >&2; exit 1; }
+cd "${ROOT}"
+LLAMA="$(python3 -m tools.backcluster.engine_overlay --source-path)"
 
 ARGS=(-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_OPENSSL=OFF -DBUILD_SHARED_LIBS=OFF)
 OUT="${ROOT}/build-worker"

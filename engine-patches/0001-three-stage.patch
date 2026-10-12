@@ -1,0 +1,873 @@
+diff --git a/common/infernet-toggles.cpp b/common/infernet-toggles.cpp
+index f6d037712..1e4a4e2ea 100644
+--- a/common/infernet-toggles.cpp
++++ b/common/infernet-toggles.cpp
+@@ -18,7 +18,16 @@ double infernet_toggle(const char * name, double def) {
+     std::lock_guard<std::mutex> lk(mu);
+ 
+     struct stat st;
+-    const long long mtime = stat(path, &st) == 0 ? (long long) st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec : 0;
++    long long mtime = 0;
++    if (stat(path, &st) == 0) {
++#if defined(__APPLE__)
++        mtime = (long long) st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
++#elif defined(_WIN32)
++        mtime = (long long) st.st_mtime * 1000000000LL;
++#else
++        mtime = (long long) st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
++#endif
++    }
+     if (mtime != mtime_seen) {
+         mtime_seen = mtime;
+         vals.clear();
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 8f6996423..7e0d14929 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include "llama-context.h"
+ #include "llama-memory-hybrid.h"
+ #include "llama-kv-cache.h"
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 22e4b6cce..ad205ebca 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -2388,6 +2388,13 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
+     auto & cells = v_cells[strm];
+     auto & head  = v_heads[strm];
+ 
++    // Remote seq-0 restore can route excess cells to its workers.
++    const bool remote_restore = remote && dest_seq_id == 0 && !sinfo_in;
++    if (cell_count > cells.size() && !remote_restore) {
++        LLAMA_LOG_ERROR("%s: saved cell count %u exceeds cache capacity %u\n", __func__, cell_count, cells.size());
++        return false;
++    }
++
+     const auto & flt = llama_state_filter_cur();
+     const bool keep_seq  = flt.active && flt.kv_mode != llama_state_filter::REPLACE;
+     const bool overwrite = flt.active && flt.kv_mode == llama_state_filter::OVERWRITE;
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index ea461b79b..780670c4a 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -1041,6 +1041,10 @@ void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::
+ }
+ 
+ bool llama_memory_recurrent::state_read_meta(llama_io_read_i & io, uint32_t cell_count, llama_seq_id dest_seq_id) {
++    if (cell_count > size) {
++        LLAMA_LOG_ERROR("%s: saved cell count %u exceeds recurrent capacity %u\n", __func__, cell_count, size);
++        return false;
++    }
+     const auto & flt = llama_state_filter_cur();
+     if (dest_seq_id != -1 && flt.active && flt.rs_mode == llama_state_filter::OVERWRITE) {
+         // infernet: the sequence's cell stays; only the filtered layers' rows are replaced by state_read_data
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index fc6dac92f..42e31ae57 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1732,7 +1732,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         }
+     }
+ 
+-    ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
++    const char * split_decode = getenv("LLAMA_SPLIT_DECODE");
++    const bool capacity = arch == LLM_ARCH_QWEN35 && split_decode && atoi(split_decode) != 0;
++    ml.init_mappings(!capacity, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+     pimpl->mappings.reserve(ml.mappings.size());
+ 
+     // create the backend buffers
+@@ -1774,7 +1776,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         // a lazy context is mapped whatever the load mode, but the memory-fit pass maps nothing
+         const bool is_lazy_mapped = ctx_key.lazy && !ml.no_alloc;
+ 
+-        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
++        // GPU host-pointer spans can include inactive layers between active tensors.
++        const bool copy_capacity_gpu = capacity && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU;
++        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft && !copy_capacity_gpu) {
+             GGML_ASSERT(!ml.no_alloc);
+             for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
+                 // only the mmap region containing the tensors in the model is mapped to the backend buffer
+diff --git a/src/llama-split.cpp b/src/llama-split.cpp
+index 8fe383dc6..f2b2daf2a 100644
+--- a/src/llama-split.cpp
++++ b/src/llama-split.cpp
+@@ -13,7 +13,7 @@
+ 
+ #if defined(__APPLE__) || defined(__linux__)
+ #define LLAMA_SPLIT_HAVE_SOCKETS 1
+-#include "../tools/split-prefill/tail-client.h"
++#include "../tools/split-prefill/pipeline-client.h"
+ #endif
+ 
+ #include <algorithm>
+@@ -692,6 +692,38 @@ bool llama_context::split_sd_connect(std::string & err) {
+         q.flash_attn = cparams.flash_attn ? 1 : 0;
+         q.n_rs_replay = cparams.n_rs_replay;
+         q.session = (uint64_t) ggml_time_us(); q.keep = 0;
++        if (const char * middle = getenv("LLAMA_SPLIT_MIDDLE"); middle && *middle) {
++            const char * end_text = getenv("LLAMA_SPLIT_MIDDLE_END");
++            char * end = nullptr;
++            const long M = end_text ? strtol(end_text, &end, 10) : 0;
++            if (!end_text || !end || *end || M <= L || M >= n_layer) throw std::runtime_error("invalid LLAMA_SPLIT_MIDDLE_END");
++            const char * hash = getenv("LLAMA_SPLIT_MODEL_SHA256");
++            if (!hash || strlen(hash) != 64 || !spt::valid_sha256(hash)) throw std::runtime_error("three-stage decode requires LLAMA_SPLIT_MODEL_SHA256");
++            auto pc = std::make_unique<spt::pipeline_client>();
++            pc->middle.resid_f32 = pc->tail.resid_f32 = getenv("LLAMA_SPLIT_RESID_F16") == nullptr;
++            const int timeout = getenv("LLAMA_SPLIT_TIMEOUT_S") ? atoi(getenv("LLAMA_SPLIT_TIMEOUT_S")) : 120;
++            if (timeout <= 0 || timeout > 3600) throw std::runtime_error("three-stage timeout must be in [1,3600] seconds");
++            pc->middle.timeout_s = pc->tail.timeout_s = timeout;
++            const std::string address = middle;
++            const auto colon = address.rfind(':');
++            const std::string host = address.substr(0, colon);
++            const char * port_text = colon == std::string::npos ? "50060" : address.c_str() + colon + 1;
++            char * port_end = nullptr;
++            const long port = strtol(port_text, &port_end, 10);
++            if (!port_end || *port_end || port < 1 || port > 65535) throw std::runtime_error("invalid middle port");
++            spt::hello_req3 stage = {};
++            stage.base = q; stage.layer_end = (uint32_t) M; stage.epoch = q.session ? q.session : 1;
++            memcpy(stage.source_sha256, hash, 65);
++            pc->middle.connect(host, (int) port, stage);
++            stage.base.base.L = (uint32_t) M; stage.layer_end = (uint32_t) n_layer;
++            pc->tail.connect(st.host, st.port, stage);
++            pc->start();
++            st.L = (uint32_t) L; st.n_layer = (uint32_t) n_layer; st.W = 0;
++            st.pc = std::move(pc); st.tc.reset();
++            LLAMA_LOG_WARN("%s: three-stage decode: head [0,%d), middle [%d,%ld) %s, tail [%ld,%d) %s:%d; epoch %llu\n",
++                __func__, L, L, M, middle, M, n_layer, st.host.c_str(), st.port, (unsigned long long) stage.epoch);
++            return true;
++        }
+         auto tc = std::make_unique<spt::tail_client>();
+         tc->resid_f32 = getenv("LLAMA_SPLIT_RESID_F16") == nullptr;
+         // a phone that accepts but never answers (app suspended) fails here instead of hanging the server
+@@ -727,6 +759,7 @@ bool llama_context::split_sd_connect(std::string & err) {
+     } catch (const std::exception & e) {
+         err = e.what();
+         st.tc.reset();
++        st.pc.reset();
+         st.W = 0;
+         return false;
+     }
+@@ -765,7 +798,7 @@ int llama_context::split_sd_begin(uint32_t n_tokens_all, uint32_t n_outputs_all)
+     if (D != memory->seq_pos_max(0) + 1) {
+         return bad("batch at position " + std::to_string(D) + " is not an append (memory ends at " + std::to_string(memory->seq_pos_max(0)) + ")");
+     }
+-    if (!st.tc) {
++    if (!st.tc && !st.pc) {
+         if (D != 0) {
+             LLAMA_LOG_ERROR("%s: split decode: the worker link is down and this batch continues at position %d: the conversation must restart from 0\n", __func__, D);
+             return -3;
+@@ -777,12 +810,11 @@ int llama_context::split_sd_begin(uint32_t n_tokens_all, uint32_t n_outputs_all)
+         }
+     }
+     try {
+-        auto & tc = *st.tc;
+-        if (tc.n_valid() > (uint32_t) st.W) {
+-            LLAMA_LOG_WARN("%s: split decode: resetting the worker's mirror (it holds [0, %u), this context kept [0, %d))\n", __func__, tc.n_valid(), st.W);
+-            tc.trim((uint32_t) st.W);   // below the end: the worker resets to 0
++        const uint32_t valid = st.pc ? st.pc->n_valid() : st.tc->n_valid();
++        if (valid > (uint32_t) st.W) {
++            if (st.pc) st.pc->trim((uint32_t) st.W); else st.tc->trim((uint32_t) st.W);
+         }
+-        st.W = (llama_pos) tc.n_valid();
++        st.W = (llama_pos) (st.pc ? st.pc->n_valid() : st.tc->n_valid());
+     } catch (const std::exception & e) {
+         split_sd_fail(std::string("trim: ") + e.what());
+         return -3;
+@@ -807,7 +839,9 @@ bool llama_context::split_sd_submit(int tok_off, int n_tok, llama_pos pos0, bool
+     try {
+         synchronize();
+         const int n_embd = (int) model.hparams.n_embd;
+-        st.tc->submit_chunk(embd_layer_inp[st.L].data + (size_t) tok_off * n_embd, n_tok, n_embd, pos0, want_logits, false);
++        const float * residual = embd_layer_inp[st.L].data + (size_t) tok_off * n_embd;
++        if (st.pc) st.pc->submit_chunk(residual, n_tok, n_embd, pos0, want_logits, [this] { return abort_callback && abort_callback(abort_callback_data); });
++        else st.tc->submit_chunk(residual, n_tok, n_embd, pos0, want_logits, false);
+         split_warm(st, true);
+         return true;
+     } catch (const std::exception & e) {
+@@ -830,7 +864,8 @@ bool llama_context::split_sd_finish(uint32_t n_outputs_all) {
+         std::vector<float> lg;
+         std::vector<ggml_fp16_t> taps;
+         std::string err;
+-        const bool ok = st.tc->finish(lg, taps, err);
++        auto canceled = [this] { return abort_callback && abort_callback(abort_callback_data); };
++        const bool ok = st.pc ? st.pc->finish(lg, err, canceled) : st.tc->finish(lg, taps, err, canceled);
+         split_warm(st, false);
+         if (!ok) {
+             throw std::runtime_error(err);
+@@ -846,11 +881,13 @@ bool llama_context::split_sd_finish(uint32_t n_outputs_all) {
+             }
+             memcpy(logits.data, lg.data(), n_vocab * sizeof(float));
+         }
++        const uint32_t valid = st.pc ? st.pc->n_valid() : st.tc->n_valid();
++        if (valid != (uint32_t) (st.sd_D + st.sd_n)) throw std::runtime_error("worker watermark did not commit the batch");
+         st.W = st.sd_D + st.sd_n;
+         st.n_calls++;
+         st.n_tokens += st.sd_n;
+         if (st.verbose) {
+-            const auto & tm = st.tc->tail_ms;
++            const std::vector<double> tm = st.pc ? std::vector<double>{st.pc->tail.last_ms} : st.tc->tail_ms;
+             LLAMA_LOG_WARN("%s: split decode %d tokens at %d: Mac %.1f ms, wait %.1f ms (phone %.1f ms last chunk), %s\n", __func__,
+                            st.sd_n, st.sd_D, (t_sub - st.sd_t0_us) / 1e3, (ggml_time_us() - t_sub) / 1e3, tm.empty() ? 0.0 : tm.back(),
+                            n_outputs_all ? "logits" : "no output");
+@@ -874,6 +911,7 @@ void llama_context::split_sd_fail(const std::string & why) {
+     LLAMA_LOG_ERROR("%s: split decode failed: %s; decode fails, worker link dropped (reconnects at the next batch from position 0)\n",
+                     __func__, why.c_str());
+ #ifdef LLAMA_SPLIT_HAVE_SOCKETS
++    if (st.pc) { st.pc->abort_link(); st.pc.reset(); }
+     if (st.tc) {
+         st.tc->abort_link();
+         st.tc.reset();
+diff --git a/src/llama-split.h b/src/llama-split.h
+index 46a68cd81..3f355ca30 100644
+--- a/src/llama-split.h
++++ b/src/llama-split.h
+@@ -37,7 +37,7 @@
+ #include <thread>
+ #include <vector>
+ 
+-namespace spt { class tail_client; }
++namespace spt { class tail_client; class pipeline_client; }
+ 
+ // llama_context::decode return code: the split failed and was undone; llama_decode reruns the batch locally
+ #define LLAMA_SPLIT_RERUN (-100)
+@@ -70,6 +70,7 @@ struct llama_split_state {
+     bool        sd         = false;   // split decode (LLAMA_SPLIT_DECODE=1): every ubatch goes to the worker
+ 
+     std::unique_ptr<spt::tail_client> tc;
++    std::unique_ptr<spt::pipeline_client> pc;
+     int64_t  t_retry_us = 0;          // after a failure, reconnect no earlier than this
+     uint32_t L = 0;                   // first layer on the worker
+     uint32_t L_learned = 0;           // the worker's L from its mismatch reply (used when LLAMA_SPLIT_L is unset)
+diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+index d87e18ad2..fe4a81df3 100644
+--- a/src/models/qwen35.cpp
++++ b/src/models/qwen35.cpp
+@@ -180,6 +180,9 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
+         }
+     }
+ 
++    res->t_layer_inp[il_end] = inpL;
++    if (cparams.embeddings_layer_inp[il_end]) ggml_build_forward_expand(gf, inpL);
++
+     if (il_end < n_layer) {
+         // head of a split: expose the raw residual leaving layer il_end-1, skip output norm + lm_head
+         res->t_layer_inp[il_end] = inpL;
+diff --git a/tools/split-prefill/tail-client.h b/tools/split-prefill/tail-client.h
+index 2fa6728c2..e649b6a9b 100644
+--- a/tools/split-prefill/tail-client.h
++++ b/tools/split-prefill/tail-client.h
+@@ -57,6 +57,7 @@ public:
+             n_valid_ = hello.n_valid;
+             n_taps_ = q.n_taps;
+             n_embd_ = (int) q.base.n_embd;
++            n_vocab_ = q.base.n_vocab;
+             stop_ = false;
+             writer_ = std::thread([this] { write_loop(); });
+             reader_ = std::thread([this] { read_loop(); });
+@@ -101,9 +102,12 @@ public:
+         cv_.notify_all();
+     }
+ 
+-    bool finish(std::vector<float> & last_logits, std::vector<ggml_fp16_t> & taps, std::string & err) {
++    bool finish(std::vector<float> & last_logits, std::vector<ggml_fp16_t> & taps, std::string & err, std::function<bool()> canceled = {}) {
+         std::unique_lock<std::mutex> lk(mu_);
+-        cv_.wait(lk, [&] { return !error_.empty() || n_acked_ == n_submitted_; });
++        while (error_.empty() && n_acked_ != n_submitted_) {
++            if (canceled && canceled()) { err = "split decode canceled"; lk.unlock(); abort_link(); return false; }
++            cv_.wait_for(lk, std::chrono::milliseconds(20));
++        }
+         if (!error_.empty()) { err = error_; return false; }
+         last_logits = std::move(logits_);
+         taps = std::move(taps_);
+@@ -131,6 +135,7 @@ private:
+     int fd_ = -1;
+     uint32_t n_valid_ = 0, n_taps_ = 0;
+     int n_embd_ = 0;
++    uint32_t n_vocab_ = 0;
+     std::mutex mu_;
+     std::condition_variable cv_;
+     std::deque<item> queue_;          // waiting for the writer
+@@ -148,15 +153,10 @@ private:
+             stop_ = true;
+         }
+         cv_.notify_all();
++        if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
+         if (writer_.joinable()) writer_.join();
+         if (reader_.joinable()) reader_.join();
+         if (fd_ >= 0) {
+-            // no BYE on a failed link: a stalled phone with a full send buffer would hold it for another timeout
+-            bool failed;
+-            { std::lock_guard<std::mutex> lk(mu_); failed = !error_.empty(); }
+-            if (!failed) {
+-                try { send_msg(fd_, MSG_BYE, nullptr, 0); } catch (...) {}
+-            }
+             close(fd_);
+             fd_ = -1;
+         }
+@@ -258,11 +258,17 @@ private:
+             try {
+                 const msg_hdr h = recv_hdr(fd_);
+                 if (h.type == MSG_ERR) {
++                    if (h.len > 4096) { fail("oversize worker error"); return; }
+                     std::string e(h.len, '\0'); recv_all(fd_, e.data(), h.len);
+                     fail("tail worker: " + e); return;
+                 }
+                 if (h.type != MSG_CHUNK_ACK || h.len < sizeof(chunk_rep)) { fail("bad CHUNK reply"); return; }
+                 chunk_rep r; recv_all(fd_, &r, sizeof(r));
++                const size_t expected_taps = it.taps ? (size_t) n_taps_ * it.n_tok * n_embd_ * sizeof(ggml_fp16_t) : 0;
++                if (r.status || r.n_tok != (uint32_t) it.n_tok || r.n_logits > n_vocab_ || (!it.logits && r.n_logits) ||
++                    h.len != sizeof(r) + (uint64_t) r.n_logits * sizeof(float) + expected_taps) {
++                    fail("CHUNK reply shape or status mismatch"); return;
++                }
+                 std::vector<float> lg(r.n_logits);
+                 if (r.n_logits) recv_all(fd_, lg.data(), lg.size() * sizeof(float));
+                 const size_t n_tap = h.len - sizeof(r) - (size_t) r.n_logits * sizeof(float);
+diff --git a/tools/split-prefill/tail-server.h b/tools/split-prefill/tail-server.h
+index 55e01d4a6..3b5c0ed82 100644
+--- a/tools/split-prefill/tail-server.h
++++ b/tools/split-prefill/tail-server.h
+@@ -45,6 +45,7 @@
+ #include <cstring>
+ #include <functional>
+ #include <mutex>
++#include <memory>
+ #include <stdexcept>
+ #include <string>
+ #include <vector>
+@@ -67,6 +68,7 @@ enum msg_type : uint32_t {
+     //   STATE_RANGE range_req                      -> STATE_DATA blob  (this tail's state: KV rows [p0, p1) and/or recurrent)
+     //   CHUNK       want_logits bit 1: also return the tap-layer inputs of the chunk (f16, n_taps x n_tok x n_embd) after the logits
+     MSG_TRIM, MSG_SYNC, MSG_OK, MSG_STATE_RANGE,
++    MSG_STAGE_HELLO = 19, MSG_STAGE_HELLO_OK, MSG_STAGE_CHUNK, MSG_STAGE_CHUNK_ACK, MSG_STAGE_RESTORE,
+ };
+ 
+ enum resid_dtype : uint32_t { DT_F32 = 0, DT_F16 = 1 };
+@@ -97,6 +99,26 @@ struct hello_rep2 { hello_rep base; uint32_t n_valid; uint64_t session; };
+ struct sync_req   { uint32_t flags, n_valid_after; };          // flags: 1 KV rows (appended), 2 recurrent (replaced)
+ struct range_req  { int32_t p0, p1; uint32_t flags; };         // flags as sync_req
+ struct chunk_rep { uint32_t status, n_tok, n_logits; float compute_ms; };
++// Stage extension of v2. Full source SHA256 binds all shards to one set of weights.
++struct hello_req3 { hello_req2 base; uint32_t layer_end; uint64_t epoch; char source_sha256[65]; };
++struct hello_rep3 { hello_rep2 base; uint32_t layer_end, flags; uint64_t epoch; char source_sha256[65]; };
++struct chunk_req3 { chunk_req base; uint64_t epoch, request_id; };
++struct chunk_rep3 { chunk_rep base; uint32_t n_residual, dtype; uint64_t epoch, request_id; uint32_t n_valid; };
++struct restore_req3 { uint64_t epoch; uint32_t n_valid; };
++constexpr uint32_t STAGE_RESIDUAL = 1, STAGE_LOGITS = 2;
++constexpr uint64_t MAX_FRAME_BYTES = 512ull << 20;
++inline bool valid_kv_type(int32_t type) {
++    switch (type) {
++        case GGML_TYPE_F32: case GGML_TYPE_F16: case GGML_TYPE_BF16: case GGML_TYPE_Q8_0:
++        case GGML_TYPE_Q4_0: case GGML_TYPE_Q4_1: case GGML_TYPE_IQ4_NL: case GGML_TYPE_Q5_0: case GGML_TYPE_Q5_1: return true;
++        default: return false;
++    }
++}
++inline bool valid_sha256(const char * value) {
++    if (value[64] != 0) return false;
++    for (int i = 0; i < 64; ++i) if (!((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f'))) return false;
++    return true;
++}
+ #pragma pack(pop)
+ 
+ // ---- socket helpers ---------------------------------------------------------------------------
+@@ -138,6 +160,7 @@ inline void send_msg(int fd, uint32_t type, const void * a, size_t na, const voi
+ inline msg_hdr recv_hdr(int fd) {
+     msg_hdr h;
+     recv_all(fd, &h, sizeof(h));
++    if (h.len > MAX_FRAME_BYTES) throw std::runtime_error("frame exceeds 512 MiB limit");
+     if (h.magic != MAGIC) throw std::runtime_error("bad message magic (not a split-prefill tail peer?)");
+     return h;
+ }
+@@ -205,6 +228,8 @@ public:
+     // called on every HELLO once the context is ready (e.g. to switch the FFN offload on or off for the next chunks);
+     // returns a note appended to the model description the client sees ("" = none)
+     std::function<std::string(llama_context *, int n_layer_tail)> on_hello;
++    std::function<std::string(const std::string &)> on_before_load;
++    std::function<std::string(llama_model *)> on_load;
+ 
+     // who may connect (default: loopback only, see accept_loopback_only)
+     void set_accept_filter(accept_filter_fn f) { accept_ok_ = std::move(f); }
+@@ -226,6 +251,7 @@ public:
+     // Loads the model (once). Returns an error string or "".
+     std::string load() {
+         if (model_) return "";
++        if (on_before_load) { const auto err = on_before_load(path_); if (!err.empty()) { status("error", err); return err; } }
+         FILE * f = fopen(path_.c_str(), "rb");
+         if (!f) { status("no model", path_); return "no tail model at " + path_; }
+         fseeko(f, 0, SEEK_END); file_bytes_ = (uint64_t) ftello(f); fclose(f);
+@@ -249,12 +275,21 @@ public:
+ 
+         char buf[256];
+         layer_start_  = llama_model_meta_val_str(model_, "split.layer_start",  buf, sizeof(buf)) > 0 ? (uint32_t) atoi(buf) : 0;
+-        no_head_      = llama_model_meta_val_str(model_, "split.no_head",      buf, sizeof(buf)) > 0;
++        layer_end_ = llama_model_meta_val_str(model_, "split.layer_end", buf, sizeof(buf)) > 0 ? (uint32_t) atoi(buf) : 0;
++        source_sha256_ = llama_model_meta_val_str(model_, "backcluster.source.sha256", buf, sizeof(buf)) > 0 ? buf : "";
++        no_head_      = llama_model_meta_val_str(model_, "split.no_head", buf, sizeof(buf)) > 0 && atoi(buf) != 0;
+         n_layer_full_ = llama_model_meta_val_str(model_, "split.n_layer_full", buf, sizeof(buf)) > 0 ? (uint32_t) atoi(buf) : 0;
++        if (!layer_end_) layer_end_ = n_layer_full_;
++        middle_ = layer_end_ < n_layer_full_;
+         llama_model_desc(model_, buf, sizeof(buf));
+         desc_ = buf;
+         if (llama_model_meta_val_str(model_, "general.name", buf, sizeof(buf)) > 0) desc_ = std::string(buf) + " | " + desc_;
+-        if (layer_start_ == 0) { status("error", "not a split TAIL GGUF (no split.layer_start)"); return "not a split TAIL GGUF"; }
++        if (layer_start_ == 0 || layer_end_ <= layer_start_ || layer_end_ > n_layer_full_ ||
++            layer_end_ - layer_start_ != (uint32_t) llama_model_n_layer(model_)) { status("error", "not a split TAIL GGUF (no split.layer_start)"); llama_model_free(model_); model_ = nullptr; return "not a split TAIL GGUF"; }
++        if (on_load) {
++            const auto err = on_load(model_);
++            if (!err.empty()) { llama_model_free(model_); model_ = nullptr; status("error", err); return err; }
++        }
+         {
+             std::lock_guard<std::mutex> lk(st_->mu);
+             st_->model_desc = desc_;
+@@ -324,7 +359,10 @@ private:
+     uint64_t session_ = 0;
+     uint32_t n_valid_ = 0;            // the mirror holds positions [0, n_valid_) of the Mac's conversation
+     std::vector<int32_t> taps_;
+-    uint32_t layer_start_ = 0, n_layer_full_ = 0;
++    uint32_t layer_start_ = 0, layer_end_ = 0, n_layer_full_ = 0;
++    bool middle_ = false, stage_session_ = false;
++    uint64_t epoch_ = 0, last_request_id_ = 0;
++    std::string source_sha256_;
+     accept_filter_fn accept_ok_;
+     bool     no_head_ = false;        // split-gguf.py --no-head: no token_embd / output, never logits
+     uint64_t file_bytes_ = 0;
+@@ -337,9 +375,28 @@ private:
+     static void send_err(int fd, const std::string & e) { send_msg(fd, MSG_ERR, e.data(), e.size()); }
+ 
+     void handle(int fd) {
++        bool hello_seen = false;
+         while (true) {
+             msg_hdr h = recv_hdr(fd);
++            if (!hello_seen && h.type != MSG_HELLO && h.type != MSG_STAGE_HELLO && h.type != MSG_PING && h.type != MSG_BYE) {
++                send_err(fd, "HELLO required on this connection"); return;
++            }
+             const auto t_hdr = std::chrono::steady_clock::now();
++            uint64_t limit = MAX_FRAME_BYTES;
++            switch (h.type) {
++                case MSG_HELLO: limit = sizeof(hello_req2); break;
++                case MSG_STAGE_HELLO: limit = sizeof(hello_req3); break;
++                case MSG_CHUNK: case MSG_STAGE_CHUNK:
++                    limit = ctx_ ? sizeof(chunk_req3) + (uint64_t) ctx_n_ub_ * llama_model_n_embd(model_) * 4 : sizeof(chunk_req3);
++                    break;
++                case MSG_PING: limit = (64ull << 20) + 4; break;
++                case MSG_TRIM: limit = 4; break;
++                case MSG_STATE_RANGE: limit = sizeof(range_req); break;
++                case MSG_RESET: case MSG_STATE: case MSG_BYE: limit = 0; break;
++                case MSG_SYNC: case MSG_STAGE_RESTORE: break;
++                default: limit = 0; break;
++            }
++            if (h.len > limit) { send_err(fd, "message payload exceeds its limit"); return; }
+             in_.resize(h.len);
+             if (h.len) recv_all(fd, in_.data(), h.len);
+             const auto t_in = std::chrono::steady_clock::now();
+@@ -347,14 +404,29 @@ private:
+                 return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count(); };
+ 
+             switch (h.type) {
+-            case MSG_HELLO: {
+-                if (h.len != sizeof(hello_req) && h.len != sizeof(hello_req2)) { send_err(fd, "bad HELLO size"); return; }
+-                const bool v2 = h.len == sizeof(hello_req2);
++            case MSG_HELLO:
++            case MSG_STAGE_HELLO: {
++                const bool stage = h.type == MSG_STAGE_HELLO;
++                if ((stage && h.len != sizeof(hello_req3)) || (!stage && h.len != sizeof(hello_req) && h.len != sizeof(hello_req2))) { send_err(fd, "bad HELLO size"); return; }
++                const bool v2 = stage || h.len == sizeof(hello_req2);
++                hello_req3 q3 = {};
++                if (stage) memcpy(&q3, in_.data(), sizeof(q3));
+                 hello_req2 q2 = {};
+                 q2.type_k = GGML_TYPE_F16; q2.type_v = GGML_TYPE_F16;
+-                memcpy(&q2, in_.data(), h.len);
++                memcpy(&q2, in_.data(), stage ? sizeof(q2) : h.len);
+                 const hello_req & q = q2.base;
+                 std::string err = load();
++                if (err.empty() && stage && (!valid_sha256(q3.source_sha256) || source_sha256_ != q3.source_sha256 ||
++                    q3.layer_end != layer_end_ || !q3.epoch || q2.n_taps != 0 || (middle_ && !no_head_) || (!middle_ && no_head_))) {
++                    err = "stage identity, range, epoch or output role mismatch";
++                }
++                if (err.empty() && !stage && middle_) err = "middle stage requires STAGE_HELLO";
++                if (err.empty() && (q.n_ctx == 0 || q.n_ctx > (1u << 24) || q.n_ubatch == 0 || q.n_ubatch > q.n_ctx ||
++                    q2.n_taps > 4 || q2.flash_attn > 1 || q2.n_rs_replay > q.n_ctx ||
++                    !valid_kv_type(q2.type_k) || !valid_kv_type(q2.type_v))) err = "invalid context or tap count";
++                for (uint32_t i = 0; err.empty() && i < q2.n_taps; ++i) {
++                    if (q2.taps[i] < 0 || q2.taps[i] > llama_model_n_layer(model_)) err = "invalid tap layer";
++                }
+                 if (err.empty() && ((q.proto != PROTO_VERSION && q.proto != 1) || q.state_format != STATE_FORMAT)) {
+                     err = "version mismatch: client proto " + std::to_string(q.proto) + "/state " + std::to_string(q.state_format) +
+                           ", phone proto " + std::to_string(PROTO_VERSION) + "/state " + std::to_string(STATE_FORMAT) +
+@@ -376,7 +448,7 @@ private:
+                     cp.n_seq_max = 1; cp.no_perf = true;
+                     cp.type_k = (ggml_type) q2.type_k; cp.type_v = (ggml_type) q2.type_v;
+                     cp.n_rs_replay = q2.n_rs_replay;
+-                    if (q2.flash_attn) cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
++                    cp.flash_attn_type = q2.flash_attn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+                     ctx_ = llama_init_from_model(model_, cp);
+                     if (!ctx_) err = "tail context creation failed (n_ctx " + std::to_string(q.n_ctx) + ", out of memory?)";
+                     else { ctx_n_ctx_ = q.n_ctx; ctx_n_ub_ = q.n_ubatch; ctx_type_k_ = q2.type_k; ctx_type_v_ = q2.type_v;
+@@ -389,6 +461,7 @@ private:
+                     n_valid_ = 0;
+                 }
+                 session_ = v2 ? q2.session : 0;
++                stage_session_ = stage; epoch_ = stage ? q3.epoch : 0; last_request_id_ = 0;
+                 for (int32_t t : taps_) llama_set_embeddings_layer_inp(ctx_, (uint32_t) t, false);
+                 taps_.clear();
+                 if (v2) {
+@@ -398,6 +471,8 @@ private:
+                     }
+                 }
+ 
++                if (middle_) llama_set_embeddings_layer_inp(ctx_, (uint32_t) llama_model_n_layer(model_), true);
++
+                 const std::string note = on_hello ? on_hello(ctx_, llama_model_n_layer(model_)) : std::string();
+                 if (!note.empty() && note[0] == '!') {   // the hook refuses this session
+                     status("error", note.substr(1)); send_err(fd, note.substr(1)); return;
+@@ -409,12 +484,19 @@ private:
+                 r.n_vocab = (uint32_t) llama_vocab_n_tokens(llama_model_get_vocab(model_));
+                 r.n_ctx = ctx_n_ctx_; r.file_bytes = file_bytes_;
+                 snprintf(r.desc, sizeof(r.desc), "%s%s", desc_.c_str(), note.c_str());
+-                if (v2) {
++                if (stage) {
++                    hello_rep3 r3 = {};
++                    r3.base = { r, n_valid_, session_ };
++                    r3.layer_end = layer_end_; r3.flags = middle_ ? STAGE_RESIDUAL : STAGE_LOGITS; r3.epoch = epoch_;
++                    snprintf(r3.source_sha256, sizeof(r3.source_sha256), "%s", source_sha256_.c_str());
++                    send_msg(fd, MSG_STAGE_HELLO_OK, &r3, sizeof(r3));
++                } else if (v2) {
+                     hello_rep2 r2 = { r, n_valid_, session_ };
+                     send_msg(fd, MSG_HELLO_OK, &r2, sizeof(r2));
+                 } else {
+                     send_msg(fd, MSG_HELLO_OK, &r, sizeof(r));
+                 }
++                hello_seen = true;
+                 status("connected", "n_ctx " + std::to_string(ctx_n_ctx_) + ", ubatch " + std::to_string(ctx_n_ub_));
+                 break;
+             }
+@@ -424,20 +506,29 @@ private:
+                 send_msg(fd, MSG_RESET_OK, nullptr, 0);
+                 break;
+             }
+-            case MSG_CHUNK: {
++            case MSG_CHUNK:
++            case MSG_STAGE_CHUNK: {
++                const bool stage = h.type == MSG_STAGE_CHUNK;
++                const size_t prefix = stage ? sizeof(chunk_req3) : sizeof(chunk_req);
+                 if (!ctx_) { send_err(fd, "CHUNK before HELLO"); return; }
+                 if (on_work) on_work();
+-                if (h.len < sizeof(chunk_req)) { send_err(fd, "bad CHUNK size"); return; }
++                if (h.len < prefix || stage != stage_session_) { send_err(fd, "bad CHUNK size"); return; }
+                 chunk_req q; memcpy(&q, in_.data(), sizeof(q));
++                chunk_req3 q3 = {};
++                if (stage) {
++                    memcpy(&q3, in_.data(), sizeof(q3));
++                    if (q3.epoch != epoch_ || q3.request_id != last_request_id_ + 1) { send_err(fd, "stale epoch or request order"); return; }
++                }
+                 const int n_embd = llama_model_n_embd(model_);
+                 const size_t el = q.dtype == DT_F16 ? 2 : 4;
+-                if (q.n_tok == 0 || q.n_tok > ctx_n_ub_ || h.len != sizeof(q) + (size_t) q.n_tok * n_embd * el) {
++                if (q.dtype > DT_F16 || q.want_logits > (stage ? 1u : 3u) || q.pos0 < 0 || (uint64_t) q.pos0 + q.n_tok > ctx_n_ctx_ ||
++                    q.n_tok == 0 || q.n_tok > ctx_n_ub_ || h.len != prefix + (size_t) q.n_tok * n_embd * el) {
+                     send_err(fd, "bad CHUNK payload"); return;
+                 }
+                 status("busy");
+                 const auto t0 = std::chrono::steady_clock::now();
+                 const float * resid = nullptr;
+-                const uint8_t * data = in_.data() + sizeof(q);
++                const uint8_t * data = in_.data() + prefix;
+                 if (q.dtype == DT_F16) {
+                     f32_.resize((size_t) q.n_tok * n_embd);
+                     ggml_fp16_to_fp32_row((const ggml_fp16_t *) data, f32_.data(), (int64_t) f32_.size());
+@@ -471,7 +562,19 @@ private:
+                         ggml_fp32_to_fp16_row(rows, tap16.data() + t * per, (int64_t) per);
+                     }
+                 }
+-                if (lg) {
++                if (stage) {
++                    chunk_rep3 r3 = {};
++                    r3.base = r; r3.dtype = DT_F32; r3.epoch = epoch_; r3.request_id = q3.request_id; r3.n_valid = n_valid_;
++                    const float * residual = nullptr;
++                    if (middle_) {
++                        residual = llama_get_embeddings_layer_inp(ctx_, (uint32_t) llama_model_n_layer(model_));
++                        if (!residual) { send_err(fd, "middle residual missing"); return; }
++                        r3.n_residual = q.n_tok * (uint32_t) n_embd;
++                    }
++                    const size_t count = r3.n_residual ? r3.n_residual : r.n_logits;
++                    send_msg(fd, MSG_STAGE_CHUNK_ACK, &r3, sizeof(r3), middle_ ? residual : lg, count * sizeof(float));
++                    last_request_id_ = q3.request_id;
++                } else if (lg) {
+                     std::vector<uint8_t> tail_payload((size_t) r.n_logits * sizeof(float) + tap16.size() * 2);
+                     memcpy(tail_payload.data(), lg, (size_t) r.n_logits * sizeof(float));
+                     if (!tap16.empty()) memcpy(tail_payload.data() + (size_t) r.n_logits * sizeof(float), tap16.data(), tap16.size() * 2);
+@@ -487,6 +590,23 @@ private:
+                 }
+                 break;
+             }
++            case MSG_STAGE_RESTORE: {
++                if (!stage_session_ || !ctx_ || h.len <= sizeof(restore_req3)) { send_err(fd, "bad STAGE_RESTORE"); return; }
++                restore_req3 q; memcpy(&q, in_.data(), sizeof(q));
++                if (q.epoch != epoch_ || q.n_valid > ctx_n_ctx_) { send_err(fd, "restore epoch or watermark mismatch"); return; }
++                if (on_work) on_work();
++                llama_memory_clear(llama_get_memory(ctx_), true); n_valid_ = 0;
++                const size_t size = in_.size() - sizeof(q);
++                if (llama_state_seq_set_data(ctx_, in_.data() + sizeof(q), size, 0) != size) {
++                    llama_memory_clear(llama_get_memory(ctx_), true); send_err(fd, "restore state rejected"); return;
++                }
++                if (llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1 != (llama_pos) q.n_valid) {
++                    llama_memory_clear(llama_get_memory(ctx_), true); send_err(fd, "restored state watermark mismatch"); return;
++                }
++                n_valid_ = q.n_valid;
++                send_msg(fd, MSG_OK, &n_valid_, sizeof(n_valid_));
++                break;
++            }
+             case MSG_STATE: {
+                 if (on_work) on_work();
+                 if (!ctx_) { send_err(fd, "STATE before HELLO"); return; }
+@@ -510,6 +630,7 @@ private:
+                 const double work_ms = ms_since(t_in);
+                 if (!ctx_ || h.len < sizeof(sync_req)) { send_err(fd, "bad SYNC"); return; }
+                 sync_req q; memcpy(&q, in_.data(), sizeof(q));
++                if (!q.flags || q.flags > 3 || q.n_valid_after > ctx_n_ctx_) { send_err(fd, "invalid SYNC flags or watermark"); return; }
+                 status("busy", "sync");
+                 llama_state_filter_set(0, 0x7fffffff, 0, 0x7fffffff, /*kv append*/ 1, /*rs replace*/ 0, (q.flags & 1) != 0, (q.flags & 2) != 0);
+                 const size_t n = llama_state_seq_set_data(ctx_, in_.data() + sizeof(q), h.len - sizeof(q), 0);
+@@ -533,6 +654,7 @@ private:
+                 if (on_work) on_work();
+                 if (!ctx_ || h.len != sizeof(range_req)) { send_err(fd, "bad STATE_RANGE"); return; }
+                 range_req q; memcpy(&q, in_.data(), sizeof(q));
++                if (!q.flags || q.flags > 3 || q.p0 < 0 || q.p1 < q.p0 || (uint32_t) q.p1 > n_valid_) { send_err(fd, "invalid STATE_RANGE"); return; }
+                 llama_state_filter_set(q.p0, q.p1, 0, 0x7fffffff, 0, 0, (q.flags & 1) != 0, (q.flags & 2) != 0);
+                 try { send_state(fd); } catch (...) { llama_state_filter_clear(); throw; }
+                 llama_state_filter_clear();
+@@ -561,9 +683,17 @@ private:
+     // file is [u32 magic, u32 version, u32 n_token=0] + exactly what llama_state_seq_get_data writes
+     // after its own [u32 io magic, i32 seq_id] prefix, so the wire blob is identical.
+     void send_state(int fd) {
+-        const std::string tmp = tmp_dir_ + "/spt-state.bin";
++        std::string pattern = tmp_dir_ + "/spt-state-XXXXXX";
++        std::vector<char> name(pattern.begin(), pattern.end()); name.push_back(0);
++        const int temp_fd = mkstemp(name.data());
++        if (temp_fd < 0) throw std::runtime_error("cannot create state temporary file");
++        close(temp_fd);
++        const std::string tmp = name.data();
+         const size_t n = llama_state_seq_save_file(ctx_, tmp.c_str(), 0, nullptr, 0);
+-        FILE * f = n > 12 ? fopen(tmp.c_str(), "rb") : nullptr;
++        struct remove_file { std::string path; ~remove_file() { unlink(path.c_str()); } } cleanup{tmp};
++        std::unique_ptr<FILE, decltype(&fclose)> file(n > 12 ? fopen(tmp.c_str(), "rb") : nullptr, fclose);
++        FILE * f = file.get();
++        if (n > 12 && (uint64_t) (n - 12 + 8) > MAX_FRAME_BYTES) { send_err(fd, "state exceeds frame limit"); throw std::runtime_error("state exceeds frame limit"); }
+         if (!f) { unlink(tmp.c_str()); send_err(fd, "state save failed (" + tmp + ")"); throw std::runtime_error("state save failed"); }
+         fseeko(f, 12, SEEK_SET);
+         const uint32_t io_magic = 0xaf143cd8u;
+@@ -576,12 +706,11 @@ private:
+         size_t left = n - 12;
+         while (left > 0) {
+             const size_t r = fread(buf.data(), 1, std::min(left, buf.size()), f);
+-            if (r == 0) { fclose(f); unlink(tmp.c_str()); throw std::runtime_error("state file short read"); }
++            if (r == 0) { throw std::runtime_error("state file short read"); }
+             send_all(fd, buf.data(), r);
+             left -= r;
+         }
+-        fclose(f);
+-        unlink(tmp.c_str());
++        file.reset();
+         status("connected", "sent state " + std::to_string(n >> 20) + " MB");
+     }
+ 
+@@ -592,7 +721,7 @@ private:
+         llama_batch b = llama_batch_init(n_tok, n_embd, 1);
+         free(b.pos);
+         b.pos = (llama_pos *) malloc(sizeof(llama_pos) * n_tok * n_pos);
+-        for (int j = 0; j < n_pos; ++j) for (int i = 0; i < n_tok; ++i) b.pos[j*n_tok + i] = pos0 + i;
++        for (int j = 0; j < n_pos; ++j) for (int i = 0; i < n_tok; ++i) b.pos[j*n_tok + i] = j == 3 ? 0 : pos0 + i;
+         memcpy(b.embd, resid, sizeof(float) * (size_t) n_tok * n_embd);
+         for (int i = 0; i < n_tok; ++i) { b.n_seq_id[i] = 1; b.seq_id[i][0] = 0; b.logits[i] = 0; }
+         b.logits[n_tok - 1] = want_logits;
+diff --git a/tools/split-prefill/pipeline-client.h b/tools/split-prefill/pipeline-client.h
+new file mode 100644
+index 000000000..958e2e66e
+--- /dev/null
++++ b/tools/split-prefill/pipeline-client.h
+@@ -0,0 +1,185 @@
++#pragma once
++
++#include "tail-client.h"
++
++#include <atomic>
++
++namespace spt {
++
++class stage_client {
++public:
++    hello_rep3 hello = {};
++    int timeout_s = 120;
++    bool resid_f32 = true;
++    double last_ms = 0;
++
++    ~stage_client() { abort(); if (fd_ >= 0) close(fd_); }
++    void abort() { if (fd_ >= 0) shutdown(fd_, SHUT_RDWR); }
++
++    void connect(const std::string & host, int port, const hello_req3 & q) {
++        if (port <= 0 || port > 65535) throw std::runtime_error("invalid stage port");
++        fd_ = socket(AF_INET, SOCK_STREAM, 0);
++        if (fd_ < 0) throw std::runtime_error("stage socket failed");
++        tune_socket(fd_);
++        timeval tv = { std::max(timeout_s, 60), 0 };
++        setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++        setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
++        sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons((uint16_t) port);
++        if (inet_pton(AF_INET, host.c_str(), &a.sin_addr) != 1) throw std::runtime_error("invalid stage IPv4 address");
++        const int flags = fcntl(fd_, F_GETFL, 0);
++        if (flags < 0 || fcntl(fd_, F_SETFL, flags | O_NONBLOCK) < 0) throw std::runtime_error("stage nonblocking setup failed");
++        int error = ::connect(fd_, (sockaddr *) &a, sizeof(a)) == 0 ? 0 : errno;
++        if (error == EINPROGRESS) {
++            pollfd p = { fd_, POLLOUT, 0 };
++            const int r = poll(&p, 1, 5000);
++            socklen_t n = sizeof(error);
++            error = r == 0 ? ETIMEDOUT : r < 0 ? errno : 0;
++            if (r > 0 && getsockopt(fd_, SOL_SOCKET, SO_ERROR, &error, &n) != 0) error = errno;
++        }
++        fcntl(fd_, F_SETFL, flags);
++        if (error) throw std::runtime_error(std::string("stage connect: ") + strerror(error));
++        send_msg(fd_, MSG_STAGE_HELLO, &q, sizeof(q));
++        auto reply = receive(MSG_STAGE_HELLO_OK, sizeof(hello));
++        if (reply.size() != sizeof(hello)) throw std::runtime_error("bad stage HELLO size");
++        memcpy(&hello, reply.data(), sizeof(hello));
++        const auto & b = hello.base.base;
++        const uint32_t role = q.layer_end < q.base.base.n_layer_full ? STAGE_RESIDUAL : STAGE_LOGITS;
++        if (b.proto != PROTO_VERSION || b.state_format != STATE_FORMAT || b.layer_start != q.base.base.L ||
++            b.n_layer_full != q.base.base.n_layer_full || b.n_layer != q.layer_end - q.base.base.L ||
++            b.n_embd != q.base.base.n_embd || b.n_vocab != q.base.base.n_vocab || b.n_ctx < q.base.base.n_ctx ||
++            hello.layer_end != q.layer_end || hello.flags != role || hello.epoch != q.epoch ||
++            !valid_sha256(hello.source_sha256) || strcmp(hello.source_sha256, q.source_sha256) != 0 ||
++            hello.base.n_valid != 0 || hello.base.session != q.base.session) throw std::runtime_error("stage HELLO compatibility mismatch");
++        n_embd_ = b.n_embd; n_vocab_ = b.n_vocab; n_ctx_ = q.base.base.n_ctx; n_ubatch_ = q.base.base.n_ubatch;
++        epoch_ = q.epoch;
++        tv.tv_sec = std::max(timeout_s, 1);
++        setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++        setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
++    }
++
++    std::vector<float> chunk(const float * data, int n_tok, int pos0, bool logits, uint64_t id) {
++        if (n_tok <= 0 || (uint32_t) n_tok > n_ubatch_ || pos0 < 0 || (uint32_t) pos0 != n_valid_ ||
++            (uint64_t) pos0 + n_tok > n_ctx_) throw std::runtime_error("stage chunk position or size mismatch");
++        const size_t count = (size_t) n_tok * n_embd_;
++        chunk_req3 q = { { pos0, (uint32_t) n_tok, resid_f32 ? DT_F32 : DT_F16, logits ? 1u : 0u }, epoch_, id };
++        std::vector<ggml_fp16_t> half;
++        if (!resid_f32) { half.resize(count); ggml_fp32_to_fp16_row(data, half.data(), (int64_t) count); }
++        send_msg(fd_, MSG_STAGE_CHUNK, &q, sizeof(q), resid_f32 ? (const void *) data : (const void *) half.data(), count * (resid_f32 ? 4 : 2));
++        const bool middle = hello.flags == STAGE_RESIDUAL;
++        const size_t expected = middle ? count : logits ? n_vocab_ : 0;
++        auto payload = receive(MSG_STAGE_CHUNK_ACK, sizeof(chunk_rep3) + expected * sizeof(float));
++        if (payload.size() != sizeof(chunk_rep3) + expected * sizeof(float)) throw std::runtime_error("bad stage CHUNK size");
++        chunk_rep3 r; memcpy(&r, payload.data(), sizeof(r));
++        if (r.base.status || r.base.n_tok != (uint32_t) n_tok || r.base.n_logits != (middle ? 0 : expected) ||
++            r.n_residual != (middle ? count : 0) || r.dtype != DT_F32 || r.epoch != epoch_ || r.request_id != id ||
++            r.n_valid != (uint32_t) pos0 + n_tok) throw std::runtime_error("stage CHUNK identity or shape mismatch");
++        std::vector<float> output(expected);
++        if (expected) memcpy(output.data(), payload.data() + sizeof(r), expected * sizeof(float));
++        n_valid_ = r.n_valid; last_ms = r.base.compute_ms;
++        return output;
++    }
++
++    uint32_t n_valid() const { return n_valid_; }
++    void trim(uint32_t n) {
++        send_msg(fd_, MSG_TRIM, &n, sizeof(n));
++        auto p = receive(MSG_OK, sizeof(uint32_t));
++        if (p.size() != sizeof(uint32_t)) throw std::runtime_error("bad stage TRIM size");
++        memcpy(&n_valid_, p.data(), sizeof(n_valid_));
++    }
++
++private:
++    int fd_ = -1;
++    uint32_t n_valid_ = 0, n_embd_ = 0, n_vocab_ = 0, n_ctx_ = 0, n_ubatch_ = 0;
++    uint64_t epoch_ = 0;
++    std::vector<uint8_t> receive(uint32_t expected, size_t max_bytes) {
++        auto h = recv_hdr(fd_);
++        if (h.type == MSG_ERR) {
++            if (h.len > 4096) throw std::runtime_error("oversize stage error");
++            std::string e(h.len, '\0'); if (h.len) recv_all(fd_, e.data(), h.len);
++            throw std::runtime_error("stage worker: " + e);
++        }
++        if (h.type != expected || h.len > max_bytes) throw std::runtime_error("unexpected stage reply type or size");
++        std::vector<uint8_t> p(h.len); if (h.len) recv_all(fd_, p.data(), p.size()); return p;
++    }
++};
++
++// Two bounded queues let head, middle and tail process different ubatches at once.
++class pipeline_client {
++public:
++    stage_client middle, tail;
++    ~pipeline_client() { abort_link(); }
++
++    void start() {
++        middle_thread_ = std::thread([this] { run(true); });
++        tail_thread_ = std::thread([this] { run(false); });
++    }
++    void submit_chunk(const float * data, int n_tok, int n_embd, int pos0, bool logits, std::function<bool()> canceled = {}) {
++        std::unique_lock<std::mutex> lock(mu_);
++        while (!stop_ && submitted_ - completed_ >= 3) {
++            if (canceled && canceled()) { lock.unlock(); abort_link(); throw std::runtime_error("split decode canceled"); }
++            cv_.wait_for(lock, std::chrono::milliseconds(20));
++        }
++        if (stop_) throw std::runtime_error(error_.empty() ? "pipeline stopped" : error_);
++        item q; q.data.assign(data, data + (size_t) n_tok * n_embd); q.n_tok = n_tok; q.pos0 = pos0;
++        q.logits = logits; q.id = ++submitted_; head_.push_back(std::move(q)); cv_.notify_all();
++    }
++    bool finish(std::vector<float> & logits, std::string & error, std::function<bool()> canceled = {}) {
++        std::unique_lock<std::mutex> lock(mu_);
++        while (!stop_ && completed_ != submitted_) {
++            if (canceled && canceled()) { error = "split decode canceled"; lock.unlock(); abort_link(); return false; }
++            cv_.wait_for(lock, std::chrono::milliseconds(20));
++        }
++        if (stop_) { error = error_; return false; }
++        logits = std::move(logits_); logits_.clear(); return true;
++    }
++    uint32_t n_valid() const {
++        if (middle.n_valid() != tail.n_valid()) throw std::runtime_error("pipeline stage watermarks differ");
++        return tail.n_valid();
++    }
++    void trim(uint32_t n) {
++        middle.trim(n); tail.trim(n);
++        if (middle.n_valid() != tail.n_valid()) throw std::runtime_error("pipeline TRIM watermarks differ");
++    }
++    void abort_link() {
++        { std::lock_guard<std::mutex> lock(mu_); stop_ = true; }
++        middle.abort(); tail.abort(); cv_.notify_all();
++        if (middle_thread_.joinable()) middle_thread_.join();
++        if (tail_thread_.joinable()) tail_thread_.join();
++    }
++private:
++    struct item { std::vector<float> data; int n_tok = 0, pos0 = 0; bool logits = false; uint64_t id = 0; };
++    mutable std::mutex mu_;
++    std::condition_variable cv_;
++    std::deque<item> head_, downstream_;
++    std::thread middle_thread_, tail_thread_;
++    bool stop_ = false;
++    uint64_t submitted_ = 0, completed_ = 0;
++    std::string error_;
++    std::vector<float> logits_;
++    void run(bool first) {
++        try {
++            while (true) {
++                item q;
++                {
++                    std::unique_lock<std::mutex> lock(mu_);
++                    auto & queue = first ? head_ : downstream_;
++                    cv_.wait(lock, [&] { return stop_ || !queue.empty(); });
++                    if (stop_) return;
++                    q = std::move(queue.front()); queue.pop_front();
++                }
++                auto output = (first ? middle : tail).chunk(q.data.data(), q.n_tok, q.pos0, !first && q.logits, q.id);
++                {
++                    std::lock_guard<std::mutex> lock(mu_);
++                    if (stop_) return;
++                    if (first) { q.data = std::move(output); downstream_.push_back(std::move(q)); }
++                    else { if (q.logits) logits_ = std::move(output); completed_++; }
++                }
++                cv_.notify_all();
++            }
++        } catch (const std::exception & e) {
++            { std::lock_guard<std::mutex> lock(mu_); if (error_.empty()) error_ = e.what(); stop_ = true; }
++            middle.abort(); tail.abort(); cv_.notify_all();
++        }
++    }
++};
++} // namespace spt

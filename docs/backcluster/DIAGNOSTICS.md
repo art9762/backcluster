@@ -3,7 +3,9 @@
 Реализован первый программный шаг BC-001: CLI и отдельный read-only `profile`
 на существующем control port мобильного worker. Полная приёмка P1 требует
 Mac/iPad/iPhone, standalone-приложения и короткого forward. Эти замеры ещё не
-выполнены. `plan`, `serve`, model lock и распределённый scheduler не реализованы.
+выполнены. `model`, `shard`, `plan`, `serve`, `bench` и `quality` дополняют эту
+диагностику; актуальные команды и границы проверки описаны в
+[PRE_HARDWARE.md](PRE_HARDWARE.md).
 
 ## Запуск
 

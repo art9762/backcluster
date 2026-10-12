@@ -9,7 +9,7 @@ Audit date: **2026-10-09**. The audit below records the planning baseline; subse
 | Backburner | https://github.com/StayLameBro/backburner | `0d2bf5d7df342eb4da253b440dd6959eedbce7ff` |
 | Engine submodule | https://github.com/StayLameBro/backburner-llama.cpp | `9f17fc31cf60753eb6bd6ec075894edab773cb91` |
 
-The engine was materialized and inspected at the exact gitlink above. No engine changes are part of this task. `README.upstream.md` is an exact copy of the parent README at the pinned commit. The upstream MIT notice, engine license and benchmark-data notices are retained. Existing rows under `bench/results/` belong to upstream.
+The engine was materialized and inspected at the exact gitlink above. The published gitlink remains unchanged. Version 0.4 adds reviewed project-owned patches in `engine-patches/`, materialized on that exact base by `tools/backcluster/engine_overlay.py`; their hashes define the downstream build identity. `README.upstream.md` remains an exact copy of the parent README at the pinned commit. Original licenses and attribution are retained. Existing rows under `bench/results/` belong to upstream.
 
 Immutable source bases for the paths in the audit:
 
@@ -51,7 +51,7 @@ The GGUF publisher describes a changed tensor layout under familiar filenames. N
 
 ## Publication boundaries
 
-New planning files contain hardware classes and technical design, without device identifiers, signing material, private project contents or credentials. A downstream engine fork is a future deliverable of BC-020. No issue, pull request or message has been sent to upstream.
+Project files contain hardware classes and technical design, without device identifiers, signing material, private project contents or credentials. GitHub denied creation of a downstream engine fork with the available integration. Reproducible parent-owned patches preserve a publicly retrievable clean base instead of creating an unpublished gitlink. No issue, pull request or message has been sent to upstream.
 
 ## Downstream tooling
 

@@ -7,8 +7,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# LLAMA_DIR: build the framework from another llama.cpp tree (e.g. a snapshot without in-progress kernel edits)
-LLAMA="${LLAMA_DIR:-${ROOT}/llama.cpp}"
 IOS="${ROOT}/ios/Backburner"
 FW="${IOS}/Frameworks"
 MIN_IOS="${MIN_IOS:-16.4}"
@@ -26,13 +24,12 @@ IPA_NAME="${IPA_NAME:-Backburner}"
 if [[ ! "${IPA_NAME}" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]]; then
   echo "invalid IPA name"; exit 1
 fi
-# BackCluster's advertised commit must describe the framework actually linked.
-EXPECTED_ENGINE="$(git -C "${ROOT}" ls-tree HEAD llama.cpp | awk '{print $3}')"
-ACTUAL_ENGINE="$(git -C "${LLAMA}" rev-parse HEAD)"
-if [[ "${ACTUAL_ENGINE}" != "${EXPECTED_ENGINE}" || -n "$(git -C "${LLAMA}" status --porcelain --untracked-files=no)" ]]; then
-  echo "engine must match the clean pinned submodule before an app can advertise compatibility"; exit 1
+# The host and worker use the same pinned base and verified project patches.
+cd "${ROOT}"
+LLAMA="$(python3 -m tools.backcluster.engine_overlay --source-path --header "${IOS}/Sidecar/BackClusterEngine.h")"
+if [[ -n "${LLAMA_DIR:-}" && "${LLAMA_DIR}" != "${LLAMA}" ]]; then
+  echo "LLAMA_DIR must identify the verified BackCluster engine source"; exit 1
 fi
-printf '#pragma once\n#define BACKCLUSTER_ENGINE_COMMIT "%s"\n' "${ACTUAL_ENGINE}" > "${IOS}/Sidecar/BackClusterEngine.h"
 
 if [[ ! -d "${LLAMA}" ]]; then
   echo "missing ${LLAMA}"
@@ -189,7 +186,8 @@ if [[ "${IPA}" == 1 ]]; then
 else
   SIGN_ARGS=(-allowProvisioningUpdates DEVELOPMENT_TEAM="${TEAM}" CODE_SIGN_STYLE=Automatic)
 fi
-SIGN_ARGS+=("APP_DISPLAY_NAME=${APP_DISPLAY_NAME}" "INFOPLIST_KEY_CFBundleDisplayName=${APP_DISPLAY_NAME}" CURRENT_PROJECT_VERSION=5 MARKETING_VERSION=0.0.5)
+SIGN_ARGS+=("APP_DISPLAY_NAME=${APP_DISPLAY_NAME}" "INFOPLIST_KEY_CFBundleDisplayName=${APP_DISPLAY_NAME}" CURRENT_PROJECT_VERSION=6 MARKETING_VERSION=0.4.0)
+SIGN_ARGS+=("HEADER_SEARCH_PATHS=\$(inherited) \"${LLAMA}\" \"${LLAMA}/include\" \"${LLAMA}/ggml/include\"")
 if [[ -n "${APP_BUNDLE_ID}" ]]; then SIGN_ARGS+=("PRODUCT_BUNDLE_IDENTIFIER=${APP_BUNDLE_ID}"); fi
 archive() {
   xcodebuild \

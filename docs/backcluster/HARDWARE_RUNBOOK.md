@@ -1,104 +1,113 @@
-# Первый заход на железо
+# Приёмка на Mac, iPad и iPhone
 
-Актуальная последовательность готовых CLI-команд: [PRE_HARDWARE.md](PRE_HARDWARE.md). Ниже сохранены подробные baseline/pair сценарии upstream.
+Сначала выполнить [программные gates](SOFTWARE_ACCEPTANCE.md). Цель аппаратной сессии — проверить установленную сборку, locked model, обе пары и трёхстадийный pipeline; затем выбрать практически полезный режим по качеству, времени и памяти. Ни один software receipt не является результатом этого опыта.
 
-Цель первой сессии: воспроизвести baseline и сравнить две пары. Трёхстадийный runtime пока не реализован. Не пытаться получить его комбинацией существующих env flags.
+## Подготовка
 
-## До запуска
+- Mac от питания, два разблокированных mobile workers в foreground, два data-кабеля и отдельные порты. Записать реально согласованный USB/Thunderbolt mode; надпись на кабеле не является замером.
+- Заранее доступны weights, manifests, build toolchain, Python/npm/provider dependencies и local coding fixture. Не добавлять weights, endpoints, UDID, Team ID и системные логи в tracked files.
+- Приложение BackCluster имеет действующую подпись и запускается standalone без debugger. Проверить срок sideload-подписи. Screen lock/background GPU проверять как отдельный failure scenario.
+- Достаточно SSD для full GGUF, всех shards и checkpoints. Начать с одной квантизации и speculation off.
 
-- Mac, iPad и iPhone физически рядом; Mac от питания, оба мобильных устройства разблокированы.
-- Два data-кабеля и отдельные порты Mac. Для iPhone нужен кабель USB 3 на 10 Gb/s; charging cable может оказаться USB 2. Для iPad проверяем реально согласованный режим, даже с Thunderbolt-кабелем.
-- Достаточно свободного SSD: основная модель, drafter, отдельные shards и checkpoints занимают больше одного GGUF. Посчитать по выбранным файлам; не скачивать все квантизации сразу.
-- Xcode/CLI tools, CMake и Python dependencies установлены заранее. Подпись приложения проверена на обоих устройствах. Срок действия sideload-подписи учитывается перед поездкой без сети.
-- Версии ОС, чипов, core counts и тип установки записаны. Проверяется standalone app без debugger.
-- Native worker остаётся foreground. Guided Access при необходимости; экран не должен блокироваться в середине опыта.
+Все пути ниже локальные. Переменные `BC_MODEL`, `BC_LOCK`, `BC_REGISTRY`, `BC_PROFILE`, `BC_HOST_BUDGET`, `BC_HOST_RESERVE`, `BC_HOST_STATE`, `BC_IPAD_STATE`, `BC_IPHONE_STATE` заполняются фактическими файлами/замерами; оценки state включают KV, recurrent, graph и transfer buffers, а не только веса.
 
-## 1. Проверить source identity
-
-В корне клона BackCluster:
+## 1. Установить одинаковый runtime
 
 ```bash
 git submodule update --init --recursive
 git rev-parse HEAD
 git -C llama.cpp rev-parse HEAD
-python3 bench/device-probe.py --no-phone
+scripts/check.sh
+scripts/test-native-pipeline.sh
+./backcluster runtime-selftest --output .backcluster/runtime-selftest.json
+./backcluster build
+IPA=1 JOBS=3 scripts/build-backcluster.sh
 ```
 
-Ожидаемый engine pin в этой подготовке: `9f17fc31cf60753eb6bd6ec075894edab773cb91`. Не обновлять его автоматически до baseline. Для mobile build и установки следовать закреплённому [upstream README](../../README.upstream.md) и [install guide](../INSTALL-IPHONE.md); будущий установщик BackCluster ещё не готов.
+Использовать installer BackCluster по [PRE_HARDWARE.md](PRE_HARDWARE.md); исходный upstream installer не запускается как обновление BackCluster. Engine base commit и content-addressed overlay build ID должны совпадать на Mac и обоих workers. Не делать `submodule update --remote` между baseline и candidate.
 
-Приложение и Mac должны использовать совместимую engine/state version. Team ID и UDID вводятся только локально; не записывать их в tracked files.
+## 2. Проверить endpoints, profile и links
 
-## 2. Подключать workers по одному
-
-Открыть установленное приложение, сначала только iPhone, затем только iPad:
+Сначала подключить каждый worker отдельно и определить его cable interface/endpoint. Затем заполнить private registry по `profiles/registry.example.json`: distinct routes, expected hardware model, measured allocation budget/reserve, актуальные protocol/engine/build versions. Registry pseudonyms не являются криптографической hardware authentication.
 
 ```bash
-python3 bench/device-probe.py
+./backcluster doctor --registry "$BC_REGISTRY" --human
+./backcluster profile --registry "$BC_REGISTRY" --output "$BC_PROFILE"
+./backcluster link-bench --registry "$BC_REGISTRY" --repeats 5 --output .backcluster/link-serial.json
+./backcluster link-bench --registry "$BC_REGISTRY" --repeats 5 --concurrent --output .backcluster/link-concurrent.json
 ```
 
-Probe может попытаться перезапустить app через `phone-up.sh`. Сохранять только обезличенную выдачу. Записать физическую RAM, app available bytes, footprint, wired/system reading и thermal; неизвестные значения не заменять нулями. Затем подключить оба и убедиться, что registry/probe различает устройства и интерфейсы.
+Сохранить physical/available/footprint/Metal bytes и thermal state. Не заменять неизвестный лимит числом по physical RAM. Payload bench включает разные размеры, upload ACK, download и raw samples; это application bandwidth, а не паспортная полоса. Не проводить его одновременно с inference. При отказе route/identity/admission исправить исходную причину и повторить probe.
 
-Отдельный BC-002 benchmark должен измерять RTT и throughput на 10–20 KB, ~1 MB и ~2.6 MB payload в обе стороны, а также два одновременных потока. Существующий probe измеряет маленький round-trip; этого недостаточно для заявления о полосе.
+## 3. Закрепить реальную модель и shards
 
-## 3. Закрепить модель и собрать engine
+`model --file ... --repository ... --revision ... --output ...` создаёт full source lock; `model --file ... --check ...` сверяет bytes и metadata. Revision — immutable 40-character SHA. Файл с похожим именем и незавершённая загрузка не проходят content verification.
 
-Использовать snapshot из [UPSTREAM.md](../../UPSTREAM.md), записать фактические bytes/SHA-256 и metadata. Не считать скачивание завершённым только по наличию непустого файла. Начинаем с IQ4_XS, проверяем модель без drafter, затем совместимый DFlash2. Не скачивать weights в git.
+Выбрать границы `BC_L` и `BC_M` по trunk/full-attention metadata и измеренным budgets. Для пары нужен tail `[L,N)`. Для pipeline нужны host `[0,L)`, middle `[L,M)`, tail `[M,N)`; MTP не включать в trunk по предположению. Использовать `shard --help` и создать три manifests, затем:
 
 ```bash
-cmake -S llama.cpp -B llama.cpp/build-metal -DCMAKE_BUILD_TYPE=Release
-cmake --build llama.cpp/build-metal --target llama-server llama-quantize -j
+./backcluster shard-check --file .backcluster/host.gguf --manifest .backcluster/host-shard.json --source "$BC_MODEL"
+./backcluster shard-check --file .backcluster/middle.gguf --manifest .backcluster/middle-shard.json --source "$BC_MODEL"
+./backcluster shard-check --file .backcluster/tail.gguf --manifest .backcluster/tail-shard.json --source "$BC_MODEL"
+./backcluster partition-check --manifest .backcluster/host-shard.json --manifest .backcluster/middle-shard.json --manifest .backcluster/tail-shard.json
 ```
 
-Первый консервативный пример использует существующий upstream launcher. Он требует, чтобы IQ4-файл лежал по его documented default path; иначе передать корректный `MODEL` локально:
+Для middle используется role `middle` без output head; tail для decode сохраняет output head. Копировать соответствующий mobile shard в `Documents/tail.gguf` приложения каждого worker, затем перезапустить его. Имя файла одинаковое; roles/ranges различаются по GGUF metadata. После eager load новый profile должен содержать `loaded_tail` с точным hash/source/range/head/build identity. `null` означает, что strict compute launch ещё не разрешён.
+
+## 4. Mac-only baseline
 
 ```bash
-PHONE=0 PHONE_ANE=0 DRAFT= SPEC_TYPE=none SPEC_REPLAY=0 \
-SME=0 MM_SME=0 PROXY=0 LOAD_MODE=mmap CTX=16384 \
-scripts/serve.sh
+./backcluster serve --file "$BC_MODEL" --lock "$BC_LOCK" --context 16384 --dry-run --output .backcluster/mac-launch.json
+./backcluster serve --file "$BC_MODEL" --lock "$BC_LOCK" --context 16384 --output .backcluster/mac-launch.json
 ```
 
-Это диагностический профиль, не оптимальный режим: mmap может давать page-ins. Проверить `/health`, `/v1/models`, короткий ответ и memory pressure. Затем отдельно исследовать upstream wired mode с фактическим запасом RAM. Не применять глобальный `sysctl` вслепую; записать исходное значение и выбранный лимит, проверить параллельную работу IDE.
-
-## 4. Baseline и пары
-
-| Серия | Состав | Что отделяет |
-|---|---|---|
-| B0 | Stock llama.cpp, если поддерживает данный GGUF | Эффект fork kernels; необязателен для pair-сравнения |
-| B1 | Pinned fork, Mac, draft off | Базовая математика и память |
-| B2 | Pinned fork, Mac, draft on | Эффект speculative decoding |
-| B3 | Mac + iPhone | Эффект одного worker |
-| B4 | Mac + iPad | Выбор лучшей пары |
-| B5 | Mac + два KV-workers | Проверка remote context; отдельная глубокая серия |
-| B6 | Distributed weights, 2/3 стадии | Только после соответствующей реализации |
-
-Порядок B2/B3/B4 чередовать, учитывать одинаковый thermal state и cache state. 16k/32k сначала, затем 64k при наличии бюджета. Prefill: короткие ~128-token turns, append ~2k и cold ~8k; decode: 256 accepted output tokens. Пять повторов, raw rows и median/p95. Первый restore и дальнейшие appends не смешивать.
-
-После проверки безопасного 64k upstream profile можно переиспользовать:
+В другом terminal проверить `/health`, `/v1/models`, затем:
 
 ```bash
-python3 bench/turn-bench.py --build
-python3 bench/turn-bench.py --config mac --reps 5
-python3 bench/turn-bench.py --config phone --reps 5
+./backcluster quality --lock "$BC_LOCK" --launch .backcluster/mac-launch.json --output .backcluster/mac-quality.json
+./backcluster bench --lock "$BC_LOCK" --launch .backcluster/mac-launch.json --prompt .backcluster/prompt.txt --repeats 5 --tokens 256 --output .backcluster/mac-bench.json
 ```
 
-`turn-bench.py` жёстко задаёт 64k, запускает server и пишет в `bench/results/turns.jsonl`. Для нового режима сначала адаптировать параметры/outputs, не считать его маленьким smoke-test. Не перезаписывать и не выдавать historical upstream rows за новые. Выводы BackCluster хранить отдельно с source commit и timestamp.
+Не повышать context до 32k/64k до измерения пика и reserve с открытым IDE. Не менять глобальный wired limit ради прохождения теста. Baseline без draft/speculation сохраняет тот же cache dtype и prompt, что candidate.
 
-Для выбора iPad или iPhone в раннем парном тесте физически подключать только нужный worker. С несколькими устройствами порядок первой строки auto-discovery не является выбором роли.
+## 5. Пары и pipeline
 
-## 5. Качество, устойчивость, agent loop
+Сначала `split-decode`/`capacity` с одним worker role `tail_stage`, затем другая пара с новым exact tail range и profile. `split-prefill` — отдельная серия с полной моделью на Mac; она не доказывает capacity gain. Для pipeline registry содержит iPad `middle_stage` и iPhone `tail_stage` либо роли, выбранные по замерам.
 
-- Greedy regression на фиксированных prompts и context sizes; при расхождении сравнить teacher-forced top-1/top-k и KL. Квантизацию не менять внутри distributed-vs-local проверки.
-- `launch-quality.py` для probabilities запускать без speculation: upstream сообщает ограниченное покрытие probabilities при draft mode.
-- 60 минут нагрузки: peak footprint, Metal memory, swap delta, temperature/thermal state, power и accepted tok/s. Проверить с открытым IDE и локальной сборкой.
-- Контролируемо отменить streaming request; свернуть приложение; заблокировать worker; отключить кабель; подключить снова. Ожидаемые outcomes описаны в [архитектуре](ARCHITECTURE.md).
-- Выполнить `tests/security/run.sh` на Mac и `scripts/check-phone-exposure.py` по его справке на устройствах после сетевых изменений. В Linux-подготовке suite не запускался из-за отсутствия Apple toolchain.
+Пример полной pipeline command; до фактического запуска проверить тот же набор параметров с `--dry-run`:
 
-На OpenCode: определить `opencode --version`, выбрать подходящий provider schema, использовать `http://127.0.0.1:8080/v1` и model ID, проверенный через `/v1/models`. Ограничение context клиента должно соответствовать серверу и оставлять output budget. Проверить thinking/reasoning отдельно от финального content и корректный round-trip tool calls.
+```bash
+./backcluster serve --mode pipeline --file "$BC_MODEL" --lock "$BC_LOCK" \
+  --registry "$BC_REGISTRY" --profile "$BC_PROFILE" --context 16384 \
+  --host-budget-bytes "$BC_HOST_BUDGET" --host-reserve-bytes "$BC_HOST_RESERVE" \
+  --host-state-bytes "$BC_HOST_STATE" \
+  --state-bytes "ipad=$BC_IPAD_STATE" --state-bytes "iphone=$BC_IPHONE_STATE" \
+  --split-layer "$BC_L" --middle-end "$BC_M" \
+  --middle-file .backcluster/middle.gguf --middle-manifest .backcluster/middle-shard.json \
+  --tail-file .backcluster/tail.gguf --tail-manifest .backcluster/tail-shard.json \
+  --output .backcluster/pipeline-launch.json
+```
 
-## 6. Offline-приёмка
+Live checks выполняются повторно, даже если передан profile. Сначала качество/greedy correctness, затем пять одинаковых bench repetitions. Сравнить:
 
-Все weights, draft, Python/npm dependencies, provider package, build toolchain и локальные тестовые зависимости предварительно доступны. Выключить внешние сети, сохранив кабельный transport. Запустить новую coding-сессию и завершить read/edit/test задачу без удалённого LLM, загрузки packages или web-tools. IDE/agent telemetry и auto-update проверить по фактической версии клиента.
+```bash
+./backcluster quality --lock "$BC_LOCK" --launch .backcluster/pipeline-launch.json --output .backcluster/pipeline-quality.json
+./backcluster bench --lock "$BC_LOCK" --launch .backcluster/pipeline-launch.json --prompt .backcluster/prompt.txt --repeats 5 --tokens 256 --output .backcluster/pipeline-bench.json
+./backcluster bench-compare --baseline .backcluster/mac-bench.json --candidate .backcluster/pipeline-bench.json --allow-runtime-changes --output .backcluster/comparison.json
+```
 
-## Что принести в следующую сессию
+`--allow-runtime-changes` разрешает явное сравнение разных режимов; source/prompt/output evidence всё равно проверяются. Не выдавать different tokenization/context/cache/quantization за чистое distributed сравнение. Проверить короткий decode, cold prefill, cached append и reset отдельно. При различии greedy output сравнить teacher-forced logits/top-k на той же модели прежде, чем делать вывод о качестве.
 
-Обезличенный device profile, versions и artifact hashes; B1–B4 raw results; installed signing type; фактические link modes; симптомы memory/thermal failures. Сырые системные логи перед публикацией проверить на пути, имена, UDID и credentials.
+`remote-kv` с одним/двумя workers — отдельный режим и отдельный registry role. Его total context больше local window, соответствующие state estimates учитывают block-cyclic allocation; tail-compute и remote KV одновременно launcher отвергает.
+
+## 6. Отказы, память и offline coding
+
+Провести час нагрузки с IDE и локальной сборкой: peak app footprint, Metal allocation, Mac resident memory/swap, thermal, wall time и accepted tok/s. Capacity требует фактического уменьшения Mac peak memory; tensor override и сумма RAM трёх устройств этого не доказывают.
+
+Отменить SSE, отключить каждый кабель во время prefill/decode, свернуть/заблокировать worker и подключить снова. После потерянного уникального состояния ожидается bounded failure; продолжение с неизвестным KV/GDN запрещено. Для текущего native pipeline безопасный recovery — clear/re-prefill полной согласованной истории. Production distributed checkpoint recovery пока не принят; BCTX checkpoint test не использовать как его substitute.
+
+Запустить `tests/security/run.sh` на Mac и exposure check по справке `scripts/check-phone-exposure.py`. Проверить raw-port отказ на Wi-Fi и действующую paired encrypted tunnel policy.
+
+Определить `opencode --version`, затем `opencode-config --client-version ... --lock ... --context ... --output ...`; provider URL/alias сверить с `/v1/models`. Выполнить реальную read/edit/test задачу, tool round-trip, reasoning/content parsing и cancel. Последнюю серию провести без внешних сетей, сохранив кабели; никакие packages/weights/remote LLM не должны догружаться.
+
+Сохранить private raw reports и обезличенный итог: commits/build IDs, hashes, установки/signing, routes/link modes, context/cache settings, memory/thermal peaks, качество и сбои. Публиковать только проверенные результаты; пути, имена, endpoints, UDID и credentials удалить.

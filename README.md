@@ -16,15 +16,16 @@
 
 | Возможность | Состояние |
 | --- | --- |
-| CLI `doctor`, `profile`, `model`, `plan`, `link-bench`, `build`, `serve`, `bench` | Реализовано, есть автоматические проверки |
+| CLI diagnostics, model/shard/partition, plan/serve, quality/bench/compare, OpenCode config | Реализовано, есть автоматические проверки |
 | Проверка GGUF, SHA-256, engine pin и template identity | Реализовано, без загрузки весов целиком в RAM |
 | Явный registry устройств и отдельные оценки памяти | Реализовано; план показывает блокеры |
 | Mac-only OpenAI-compatible endpoint | Реализован запуск; inference на целевом Mac требует проверки |
 | iPhone/iPad worker, кабель и шифрованный Wi-Fi tunnel | Сохранён upstream runtime; BackCluster app собирается в CI |
-| Парный split-prefill/decode и remote KV | Upstream-сценарии; нужны замеры на устройствах |
-| Три вычислительные стадии и восстановление распределённых сессий | Запланировано |
+| Парный split-prefill/decode и один/два remote-KV workers | Явный launcher с live identity/routes/memory checks; нужны замеры на устройствах |
+| Три вычислительные стадии Mac → middle → tail | Native downstream runtime; численная CPU-проверка, аппаратная приёмка ожидается |
+| Atomic checkpoints и durable tool journal | Проверенный portable toolkit; интеграция с native OpenAI server остаётся отдельной работой |
 
-**Следующий этап — аппаратная приёмка.** Сборка и transport-тесты не подтверждают скорость модели, мобильный бюджет памяти или корректность distributed inference. Отчёты сохраняют `hardware_validated=false`, планы — `launch_ready=false`.
+**Следующий этап реализованных режимов — аппаратная приёмка.** Native CPU gate сравнивает обычный и трёхстадийный forward маленькой Qwen35, включая GDN/full attention, f32/f16 residual, greedy, append/reset и потерю workers. Он не подтверждает качество/скорость Qwen3.8-27B, Metal kernels или мобильный бюджет. Отчёты сохраняют `hardware_validated=false`, offline планы — `launch_ready=false`. [Матрица проверок и оставшихся работ](docs/backcluster/SOFTWARE_ACCEPTANCE.md).
 
 ### Быстрый старт
 
@@ -65,7 +66,9 @@ Endpoint: **`http://127.0.0.1:8080/v1`**. Model alias: `backcluster-<первы�
 Во втором терминале:
 
 ```bash
-./backcluster bench --lock .backcluster/model-lock.json --prompt bench/prompt.txt \
+./backcluster quality --lock .backcluster/model-lock.json --launch .backcluster/launch.json \
+  --tokens 512 --output .backcluster/mac-quality.json
+./backcluster bench --lock .backcluster/model-lock.json --launch .backcluster/launch.json --prompt bench/prompt.txt \
   --repeats 5 --tokens 256 --output .backcluster/baseline-16k.json
 ```
 
@@ -88,6 +91,7 @@ Endpoint: **`http://127.0.0.1:8080/v1`**. Model alias: `backcluster-<первы�
 ```bash
 scripts/install-hooks.sh
 scripts/check.sh
+scripts/test-native-pipeline.sh
 # На Mac: дополнительно Apple security suite
 tests/security/run.sh
 ```

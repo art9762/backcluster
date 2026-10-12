@@ -59,11 +59,19 @@ def normalize_worker(reply):
         "thermal_state": reply.get("thermal_state"),
         "runtime": {key: runtime.get(key) for key in (
             "app_version", "app_build", "phone_attn_version", "tail_protocol_version", "tail_state_format",
-            "control_protocol_version", "engine_commit",
+            "control_protocol_version", "engine_commit", "engine_build_id",
         )},
         "capabilities": [c for c in reply.get("capabilities", []) if isinstance(c, str) and c in CAPABILITIES]
             if isinstance(reply.get("capabilities"), list) else [],
     }
+    if reply.get("loaded_tail") is not None:
+        tail = reply["loaded_tail"]
+        if not isinstance(tail, dict):
+            raise ValueError("invalid_worker_profile")
+        device["loaded_tail"] = {key: tail.get(key) for key in (
+            "artifact_sha256", "source_sha256", "engine_commit", "engine_build_id",
+            "layer_start", "layer_end", "output_head", "context", "state", "bytes",
+        )}
     errors = device_errors(device)
     if errors or not integer(device["memory"]["physical_bytes"], 1) or not integer(device["memory"]["process_available_bytes"]):
         raise ValueError("invalid_worker_profile")
@@ -117,6 +125,27 @@ def device_errors(device):
         commit = runtime.get("engine_commit")
         if commit is not None and (not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}|unknown", commit) is None):
             errors.append("invalid engine commit")
+        build = runtime.get("engine_build_id")
+        if build is not None and (not isinstance(build, str) or re.fullmatch(r"[0-9a-f]{64}|unknown", build) is None):
+            errors.append("invalid engine build identity")
+    tail = device.get("loaded_tail")
+    if tail is not None:
+        if not isinstance(tail, dict):
+            errors.append("loaded_tail must be an object")
+        else:
+            for key, width in (("artifact_sha256", 64), ("source_sha256", 64), ("engine_commit", 40)):
+                if not isinstance(tail.get(key), str) or re.fullmatch(r"[0-9a-f]{%d}" % width, tail[key]) is None:
+                    errors.append("invalid loaded tail identity")
+            if tail.get("engine_build_id") is not None and (not isinstance(tail["engine_build_id"], str) or re.fullmatch(r"[0-9a-f]{64}", tail["engine_build_id"]) is None):
+                errors.append("invalid loaded tail build identity")
+            if not integer(tail.get("layer_start")) or not integer(tail.get("layer_end"), 1) or tail["layer_start"] >= tail["layer_end"]:
+                errors.append("invalid loaded tail layer range")
+            if type(tail.get("output_head")) is not bool or not integer(tail.get("bytes"), 1):
+                errors.append("invalid loaded tail size or head")
+            if tail.get("context") is not None and not integer(tail["context"], 1):
+                errors.append("invalid loaded tail context")
+            if tail.get("state") not in ("ready", "connected", "busy", "error", "loading", "no model"):
+                errors.append("invalid loaded tail state")
     caps = device.get("capabilities")
     if not isinstance(caps, list) or any(not isinstance(c, str) or c not in CAPABILITIES for c in caps):
         errors.append("unknown capabilities")
