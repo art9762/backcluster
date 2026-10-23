@@ -389,14 +389,14 @@ class CheckpointStore:
 class TranscriptJournal:
     """SQLite transcript and durable, at-most-once JSON tool result journal."""
 
-    def __init__(self, path, *, max_document_bytes=MAX_DOCUMENT_BYTES, max_records=100000):
+    def __init__(self, path, *, max_document_bytes=MAX_DOCUMENT_BYTES, max_records=100000, create=True):
         self.path = Path(os.path.abspath(os.fspath(path)))
         self.max_document_bytes = _positive_limit(max_document_bytes, 'max_document_bytes')
         self.max_records = _positive_limit(max_records, 'max_records')
         self._lock = threading.RLock()
-        _, directory = _open_directory(self.path.parent, create=True)
+        _, directory = _open_directory(self.path.parent, create=create)
         try:
-            descriptor = _open_regular(directory, self.path.name, os.O_RDWR | os.O_CREAT)
+            descriptor = _open_regular(directory, self.path.name, os.O_RDWR | (os.O_CREAT if create else 0))
             os.close(descriptor)
             # SQLite creates these itself. Refuse pre-existing links before it
             # opens any auxiliary file in the private journal directory.
@@ -416,9 +416,10 @@ class TranscriptJournal:
             self._db.execute('PRAGMA synchronous=FULL')
             self._db.execute('PRAGMA trusted_schema=OFF')
             version = self._db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError('unsupported transcript journal version')
             self._db.executescript('''
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY, role TEXT NOT NULL, content TEXT NOT NULL,
                     sha256 TEXT NOT NULL, created_ns INTEGER NOT NULL);
@@ -428,7 +429,11 @@ class TranscriptJournal:
                     result TEXT, result_sha256 TEXT, started_ns INTEGER NOT NULL, completed_ns INTEGER,
                     CHECK((status = 'running' AND result IS NULL AND result_sha256 IS NULL AND completed_ns IS NULL)
                        OR (status = 'completed' AND result IS NOT NULL AND result_sha256 IS NOT NULL AND completed_ns IS NOT NULL)));
-                PRAGMA user_version=1;
+                CREATE TABLE IF NOT EXISTS reconciliations (
+                    call_id TEXT PRIMARY KEY REFERENCES calls(call_id), evidence TEXT NOT NULL,
+                    sha256 TEXT NOT NULL);
+                PRAGMA user_version=2;
+                COMMIT;
             ''')
             _, parent = _open_directory(self.path.parent)
             try:
@@ -464,6 +469,25 @@ class TranscriptJournal:
         count = self._db.execute('SELECT (SELECT COUNT(*) FROM messages) + (SELECT COUNT(*) FROM calls)').fetchone()[0]
         if count >= self.max_records:
             raise ValueError('journal record limit exceeded')
+
+    @contextlib.contextmanager
+    def _executors(self, exclusive=False):
+        # A running callback must finish (or its process must exit) before an
+        # operator can assert its outcome. Shared locks allow unrelated tools
+        # to execute concurrently; the exclusive reconciliation lock never waits.
+        _, directory = _open_directory(self.path.parent)
+        descriptor = None
+        try:
+            descriptor = _open_regular(directory, self.path.name + '.executors.lock', os.O_RDWR | os.O_CREAT)
+            try:
+                fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ToolExecutionIndeterminate('journal has active executors or reconciliation; stop them before retrying') from None
+            yield
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory)
 
     def record_message(self, role, content):
         _text(role, 'message role', 64)
@@ -501,8 +525,16 @@ class TranscriptJournal:
             if result is None or hashlib.sha256(result.encode()).hexdigest() != result_hash:
                 raise ValueError('tool result checksum mismatch')
             value = _parse_json(result.encode(), self.max_document_bytes)
+        reconciled = self._db.execute('SELECT evidence,sha256 FROM reconciliations WHERE call_id=?', (call_id,)).fetchone()
+        evidence = None
+        if reconciled is not None:
+            data = reconciled[0].encode()
+            if status != 'completed' or hashlib.sha256(data).hexdigest() != reconciled[1]:
+                raise ValueError('tool reconciliation checksum or status mismatch')
+            evidence = _parse_json(data, self.max_document_bytes)
+            _text(evidence, 'reconciliation evidence', self.max_document_bytes)
         return {'call_id': call_id, 'tool': tool, 'arguments': args, 'status': status, 'result': value,
-                'started_ns': started, 'completed_ns': completed}
+                'started_ns': started, 'completed_ns': completed, 'reconciliation_evidence': evidence}
 
     def get_call(self, call_id):
         _text(call_id, 'tool call ID')
@@ -516,6 +548,10 @@ class TranscriptJournal:
         leave the record running. Subsequent attempts always raise indeterminate
         instead of calling the executor again. IDs must persist across re-prefill.
         """
+        with self._executors():
+            return self._execute(call_id, tool, arguments, executor)
+
+    def _execute(self, call_id, tool, arguments, executor):
         _text(call_id, 'tool call ID')
         _text(tool, 'tool name', 128)
         if not callable(executor):
@@ -544,6 +580,38 @@ class TranscriptJournal:
                 raise ToolExecutionIndeterminate('tool result cannot be committed')
         return _parse_json(data, self.max_document_bytes)
 
+    def reconcile(self, call_id, tool, arguments, result, *, evidence):
+        """Commit an independently verified outcome, without invoking any tool.
+
+        Stop all journal executors first and inspect the actual side effect.
+        An unknown outcome must stay running. Request identity, result and
+        evidence are immutable; repeating the exact reconciliation is safe.
+        """
+        _text(call_id, 'tool call ID')
+        _text(tool, 'tool name', 128)
+        _text(evidence, 'reconciliation evidence', self.max_document_bytes)
+        if not evidence.strip():
+            raise ValueError('reconciliation evidence must describe the verified outcome')
+        args = _json_bytes(arguments, self.max_document_bytes)
+        data = _json_bytes(result, self.max_document_bytes)
+        proof = _json_bytes(evidence, self.max_document_bytes)
+        with self._executors(exclusive=True), self._transaction():
+            previous = self._call(call_id)
+            if previous is None:
+                raise ValueError('tool call does not exist')
+            if previous['tool'] != tool or _json_bytes(previous['arguments'], self.max_document_bytes) != args:
+                raise ValueError('tool call ID reused with different request')
+            if previous['status'] == 'completed':
+                if (previous['reconciliation_evidence'] == evidence and
+                        _json_bytes(previous['result'], self.max_document_bytes) == data):
+                    return previous['result']
+                raise ValueError('completed tool call cannot be reconciled or changed')
+            self._db.execute("UPDATE calls SET status='completed',result=?,result_sha256=?,completed_ns=? WHERE call_id=?",
+                             (data.decode(), hashlib.sha256(data).hexdigest(), time.time_ns(), call_id))
+            self._db.execute('INSERT INTO reconciliations(call_id,evidence,sha256) VALUES(?,?,?)',
+                             (call_id, proof.decode(), hashlib.sha256(proof).hexdigest()))
+        return _parse_json(data, self.max_document_bytes)
+
     def snapshot(self):
         """Export a consistent audit snapshot, never a license to replay tools.
 
@@ -552,5 +620,5 @@ class TranscriptJournal:
         """
         with self._transaction():
             calls = [self._call(row[0]) for row in self._db.execute('SELECT call_id FROM calls ORDER BY started_ns,call_id').fetchall()]
-            return _json_bytes({'document_kind': 'backcluster_transcript', 'schema_version': 1,
+            return _json_bytes({'document_kind': 'backcluster_transcript', 'schema_version': 2,
                                 'messages': self.messages(), 'calls': calls}, self.max_document_bytes)

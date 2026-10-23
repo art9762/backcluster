@@ -80,6 +80,7 @@ Endpoint: **`http://127.0.0.1:8080/v1`**. Model alias: `backcluster-<первы�
 | --- | --- |
 | [Подготовка к устройствам](docs/backcluster/PRE_HARDWARE.md) | Сборка, установка, фиксация модели, первые замеры |
 | [Диагностика](docs/backcluster/DIAGNOSTICS.md) | Форматы, ограничения и exit codes |
+| [Восстановление tool result](docs/backcluster/TOOL_RECOVERY.md) | Проверка и фиксация результата после crash без повторного side effect |
 | [Архитектура](docs/backcluster/ARCHITECTURE.md) | Роли, режимы, state и восстановление |
 | [Модель и память](docs/backcluster/MODEL_AND_MEMORY.md) | Квантизации и отдельные бюджеты |
 | [Roadmap](docs/backcluster/ROADMAP.md) · [Backlog](docs/backcluster/BACKLOG.md) | Этапы и критерии готовности |

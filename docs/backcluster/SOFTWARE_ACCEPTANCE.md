@@ -26,9 +26,11 @@ scripts/test-native-pipeline.sh
 | Native SPT stage extension в engine | Middle residual, source/range identity, epoch/request IDs, bounded messages, Mac-relayed chain и worker failure handling | Настоящие вызовы `llama_decode` на deterministic CPU fixture; Apple backend и целевая модель проверяются отдельно |
 | Python BCTX toolkit | `StageWorker`, transactional `Coordinator`, socket transport, полный checkpoint всех opaque adapter states | Software lifecycle adapters, реализующих полный snapshot/restore; это отдельный wire protocol |
 | `CheckpointStore` | Atomic complete manifest, stage bytes, sampler bytes, identity и SHA-256 каждого файла | Неполное/испорченное/чужое состояние не читается как полный checkpoint |
-| `TranscriptJournal` | SQLite `running` до tool callback, сохранённый результат, запрет автоматического повторения после crash | Tool call с тем же ID/arguments не выполняется второй раз; неопределённый результат требует reconciliation |
+| `TranscriptJournal` | SQLite `running` до tool callback, сохранённый результат, запрет автоматического повторения после crash, явная reconciliation с аудитом | Tool call с тем же ID/arguments не выполняется второй раз; проверенный результат восстанавливается атомарно, active executor блокирует reconciliation |
 
 Native fixture содержит GDN/recurrent и full-attention layers, настоящие GGUF-тензоры и маленький vocabulary. Она предназначена для сравнения monolithic и distributed математики, а не для оценки языка.
+
+Для неопределённого результата инструмента доступны `journal-call`, `journal-reconcile` и `TranscriptJournal.reconcile`. [Процедура восстановления](TOOL_RECOVERY.md) требует остановки executors и независимой проверки side effect. Команды не выполняют инструмент и не объявляют неизвестный результат успешным. Crash/reopen, cross-process locking, audit rollback и миграция SQLite v1 → v2 проверяются portable suite.
 
 Python checkpoint toolkit пока **не подключён к state ownership production `llama-server`/SPT pipeline**. Его replay не доказывает сохранение всех native KV/GDN shards или sampler RNG. Native stage restore primitive также не означает готовый distributed checkpoint launcher. Нельзя восстанавливать live tool journal из более старого inference checkpoint: уже выполненные инструменты должны остаться в журнале.
 

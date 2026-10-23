@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 from backcluster.cli import main
 from backcluster.artifacts import make_lock
 from backcluster.devices import engine_status
+from backcluster.checkpoints import TranscriptJournal
 from generate_tiny_model import generate
 
 
@@ -87,6 +88,62 @@ class WorkflowTests(unittest.TestCase):
                                      '--tokens', 128, '--client-version', '2.0.0', '--output', config)
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(config.read_text()), parsed)
+
+    def test_journal_inspect_reconcile_and_replay_workflow(self):
+        database = self.directory / 'journal.sqlite'
+        request = self.directory / 'reconcile.json'
+        with TranscriptJournal(database) as journal:
+            with self.assertRaises(RuntimeError):
+                journal.execute('fixture-call', 'edit', {'path': 'fixture.py'},
+                                lambda: (_ for _ in ()).throw(RuntimeError('after side effect')))
+        code, out, err = self.invoke('journal-call', '--journal', database, '--call-id', 'fixture-call')
+        self.assertEqual(code, 0, err)
+        call = json.loads(out)['call']
+        self.assertEqual(call['status'], 'running')
+        request.write_text(json.dumps({'call_id': call['call_id'], 'tool': call['tool'], 'arguments': call['arguments'],
+                                       'result': {'edited': True}, 'evidence': 'Inspected fixture.py and verified the edit'}))
+        for _ in range(2):
+            code, out, err = self.invoke('journal-reconcile', '--journal', database, '--request', request)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)['call']['status'], 'completed')
+        with TranscriptJournal(database) as journal:
+            self.assertEqual(journal.execute('fixture-call', 'edit', {'path': 'fixture.py'},
+                                             lambda: self.fail('CLI recovery replayed side effect')), {'edited': True})
+
+    def test_journal_cli_rejects_missing_database_and_malformed_request(self):
+        database = self.directory / 'missing.sqlite'
+        code, out, err = self.invoke('journal-call', '--journal', database, '--call-id', 'call')
+        self.assertEqual(code, 1)
+        self.assertFalse(database.exists())
+        request = self.directory / 'request.json'
+        for text in ('{"call_id":"first","call_id":"second"}', '{"call_id":"missing fields"}'):
+            request.write_text(text)
+            code, out, err = self.invoke('journal-reconcile', '--journal', database, '--request', request)
+            self.assertEqual(code, 1)
+            self.assertNotIn('Traceback', err)
+            self.assertFalse(database.exists())
+        database.write_text('not a sqlite database')
+        code, out, err = self.invoke('journal-call', '--journal', database, '--call-id', 'call')
+        self.assertEqual(code, 1)
+        self.assertIn('database operation failed', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_journal_output_cannot_overwrite_database_auxiliaries_or_request(self):
+        database = self.directory / 'journal.sqlite'
+        request = self.directory / 'request.json'
+        request.write_text('{}')
+        with TranscriptJournal(database) as journal:
+            journal.execute('call', 'shell', {}, lambda: 'done')
+            for suffix in ('', '-wal', '-shm', '-journal', '.executors.lock'):
+                with self.subTest(suffix=suffix):
+                    code, out, err = self.invoke('journal-call', '--journal', database, '--call-id', 'call',
+                                                 '--output', str(database) + suffix)
+                    self.assertEqual(code, 1)
+                    self.assertIn('distinct from inputs', err)
+            code, out, err = self.invoke('journal-reconcile', '--journal', database, '--request', request, '--output', request)
+            self.assertEqual(code, 1)
+            self.assertEqual(request.read_text(), '{}')
+            self.assertEqual(journal.get_call('call')['result'], 'done')
 
 
 if __name__ == '__main__':

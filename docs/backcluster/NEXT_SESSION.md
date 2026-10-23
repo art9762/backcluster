@@ -10,7 +10,7 @@
 - Explicit Mac, split-prefill, split-decode/capacity, pipeline и remote-KV launch receipts; live route, exact artifact identity, memory/thermal checks; inherited inference environment не определяет скрытый режим.
 - Native loaded artifact SHA-256 receipt с metadata фактически загруженной модели и invalidation после изменения файла.
 - SSE bench evidence/comparison, local quality/tool fixture и OpenCode config generator.
-- Отдельный BCTX portable state toolkit: три TCP-stage workers, commit/rollback/epoch/cancel checks, atomic complete checkpoints, durable SQLite tool journal и crash/replay tests.
+- Отдельный BCTX portable state toolkit: три TCP-stage workers, commit/rollback/epoch/cancel checks, atomic complete checkpoints, durable SQLite tool journal, audited tool-result reconciliation через API/CLI и crash/replay tests. Процедура: [TOOL_RECOVERY.md](TOOL_RECOVERY.md).
 
 Точный software/hardware scope и команды: [SOFTWARE_ACCEPTANCE.md](SOFTWARE_ACCEPTANCE.md), [PRE_HARDWARE.md](PRE_HARDWARE.md). Native build/test результаты проверять по актуальному CI, а не по наличию исходников тестов.
 

@@ -4,6 +4,7 @@ import ipaddress
 import json
 import math
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from .quality import run_quality, opencode_config
 from .sharding import split_gguf, verify_shard, validate_partition
 from .runtime import runtime_selftest
 from .engine_overlay import expected_identity
+from .checkpoints import TranscriptJournal, ToolExecutionIndeterminate
 
 
 def endpoint(value):
@@ -120,10 +122,14 @@ def byte_assignment(value):
 def protect_inputs(args):
     inputs = []
     for name in ('file', 'lock', 'profile', 'registry', 'check', 'prompt', 'launch', 'baseline',
-                 'candidate', 'source', 'tail_file', 'tail_manifest', 'middle_file', 'middle_manifest', 'link_profile'):
+                 'candidate', 'source', 'tail_file', 'tail_manifest', 'middle_file', 'middle_manifest', 'link_profile',
+                 'journal', 'request'):
         value = getattr(args, name, None)
         if isinstance(value, Path):
             inputs.append(value)
+    journal = getattr(args, 'journal', None)
+    if journal is not None:
+        inputs.extend(Path(str(journal) + suffix) for suffix in ('-wal', '-shm', '-journal', '.executors.lock'))
     manifest = getattr(args, 'manifest', None)
     if args.command != 'shard' and manifest:
         inputs.extend(manifest if isinstance(manifest, list) else [manifest])
@@ -254,6 +260,14 @@ def main(argv=None):
     opencode.add_argument('--output', type=Path, required=True)
     runtime_check = commands.add_parser('runtime-selftest', help='check transactional stages and recovery using real loopback sockets')
     runtime_check.add_argument('--output', type=Path)
+    inspect = commands.add_parser('journal-call', help='inspect a private durable tool call before reconciliation')
+    inspect.add_argument('--journal', type=Path, required=True, help='existing live SQLite journal; never a checkpoint export')
+    inspect.add_argument('--call-id', required=True)
+    inspect.add_argument('--output', type=Path)
+    reconcile = commands.add_parser('journal-reconcile', help='record an independently verified tool outcome without executing it')
+    reconcile.add_argument('--journal', type=Path, required=True, help='existing live SQLite journal; stop its executors first')
+    reconcile.add_argument('--request', type=Path, required=True, help='private JSON: call_id, tool, arguments, result, evidence')
+    reconcile.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     if not hasattr(args, "worker"):
         args.worker = []
@@ -278,7 +292,22 @@ def main(argv=None):
         if args.command == "build":
             build_engine()
             return 0
-        if args.command == 'shard':
+        if args.command in ('journal-call', 'journal-reconcile'):
+            request = None
+            if args.command == 'journal-reconcile':
+                request = load_json(args.request)
+                if set(request) != {'call_id', 'tool', 'arguments', 'result', 'evidence'}:
+                    raise ValueError('reconciliation requires exactly call_id, tool, arguments, result, evidence')
+            with TranscriptJournal(args.journal, create=False) as journal:
+                if request is not None:
+                    journal.reconcile(request['call_id'], request['tool'], request['arguments'],
+                                      request['result'], evidence=request['evidence'])
+                call = journal.get_call(request['call_id'] if request is not None else args.call_id)
+                if call is None:
+                    raise ValueError('tool call does not exist')
+                result = {'document_kind': 'backcluster_tool_call', 'schema_version': 1, 'call': call}
+            code = 0
+        elif args.command == 'shard':
             if args.output.resolve() == args.manifest.resolve() or args.file.resolve() == args.manifest.resolve():
                 raise ValueError('shard, source and manifest paths must be distinct')
             result = split_gguf(args.file, args.output, args.start, args.end, args.role,
@@ -286,7 +315,7 @@ def main(argv=None):
                                 source_lock=load_json(args.lock), engine_commit=engine_status()['expected_commit'])
             emit(result, args.manifest)
             return 0
-        if args.command == 'runtime-selftest':
+        elif args.command == 'runtime-selftest':
             result = runtime_selftest()
             code = 0 if result['ok'] else 1
         elif args.command == 'shard-check':
@@ -410,6 +439,12 @@ def main(argv=None):
         return code
     except subprocess.CalledProcessError as error:
         print('backcluster: build command failed (exit %d); see compiler output above' % error.returncode, file=sys.stderr)
+        return 1
+    except sqlite3.Error:
+        print('backcluster: journal database operation failed; see command help', file=sys.stderr)
+        return 1
+    except ToolExecutionIndeterminate as error:
+        print('backcluster: ' + str(error) + '; see command help', file=sys.stderr)
         return 1
     except OSError as error:
         detail = {2: 'required file or executable is missing', 13: 'permission denied', 28: 'not enough disk space'}.get(error.errno, 'file or system operation failed')
