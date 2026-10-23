@@ -416,6 +416,11 @@ with TranscriptJournal(sys.argv[1]) as journal:
         with self.assertRaises(FileNotFoundError):
             TranscriptJournal(self.path, create=False)
         self.assertFalse(self.path.exists())
+        self.path.write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, 'uninitialized'):
+            TranscriptJournal(self.path, create=False)
+        self.assertEqual(self.path.read_bytes(), b'')
+        self.path.unlink()
         outside = Path(self.tmp.name) / 'outside'
         outside.write_text('unchanged')
         Path(str(self.path) + '.executors.lock').symlink_to(outside)

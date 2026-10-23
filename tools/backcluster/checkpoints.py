@@ -412,12 +412,12 @@ class TranscriptJournal:
             os.close(directory)
         self._db = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
         try:
+            version = self._db.execute('PRAGMA user_version').fetchone()[0]
+            if version not in ((0, 1, 2) if create else (1, 2)):
+                raise ValueError('unsupported or uninitialized transcript journal version')
             self._db.execute('PRAGMA journal_mode=WAL')
             self._db.execute('PRAGMA synchronous=FULL')
             self._db.execute('PRAGMA trusted_schema=OFF')
-            version = self._db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, 2):
-                raise ValueError('unsupported transcript journal version')
             self._db.executescript('''
                 BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS messages (
