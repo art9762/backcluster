@@ -20,7 +20,7 @@
 | BC-023 | P1 | 022 | **SOFTWARE:** native middle residual protocol и iOS build integration | Bounded framing/source/range/epoch/request checks; Apple transport/actual model ждут железо |
 | BC-024 | P1 | 023 | **SOFTWARE:** native Mac-relayed three-stage prompt/decode + CPU correctness/failure gate | Real llama_decode fixture; target model/Metal/quality/performance ещё не приняты |
 | BC-025 | P2 | 012,024 | Совместить compute-shards и remote KV | Tail видит всю нужную историю; нет двойного учёта или пропуска attention |
-| BC-026 | P1 | 024 | **PARTIAL:** BCTX toolkit, atomic checkpoint store и durable tool journal | Portable replay/crash tests готовы; native distributed KV/GDN/RNG checkpoint и API-agent integration открыты |
+| BC-026 | P1 | 024 | **PARTIAL:** BCTX toolkit, atomic checkpoint store, durable tool journal и explicit audited tool-result reconciliation | Portable replay/crash/reconciliation tests готовы; native distributed KV/GDN/RNG checkpoint и API-agent integration открыты |
 | BC-027 | P2 | 026 | Distributed speculative decode/recurrent replay | Accept/reject откатывает все стадии; measured accepted-token gain |
 | BC-028 | P1 | 011,024 | Thermal policy и безопасная смена профиля | Warning/serious/critical state обрабатываются без порчи сессии |
 | BC-030 | P1 | 012,021 | **SOFTWARE:** CLI, fork-safe installer, distinct app identity и explicit cluster modes | Dry-run/live receipts; hardware standalone installation ждёт устройств |

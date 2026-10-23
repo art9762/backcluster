@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit tool-result reconciliation after a crash, with immutable audit evidence and atomic SQLite v1 → v2 migration.
+- Add `journal-call` and `journal-reconcile` commands; block reconciliation while a callback is active in another process and preserve at-most-once replay.
+- Cover process death/reopen, request mismatch, audit corruption/write failure, schema migration and CLI input protection. Native server/agent integration remains separate work.
+
 ## 0.4.0 — offline cluster runtime
 
 - Add reproducible, hashed downstream engine patches without changing the published gitlink.

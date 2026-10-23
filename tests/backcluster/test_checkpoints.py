@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import select
 import sqlite3
 import subprocess
 import sys
@@ -309,6 +310,125 @@ with TranscriptJournal(sys.argv[1]) as journal:
         with TranscriptJournal(self.path) as journal:
             with self.assertRaises(ToolExecutionIndeterminate):
                 journal.execute('crashed-call', 'shell', {'command': 'fixture'}, lambda: self.fail('replayed after crash'))
+            observed = {'stdout': marker.read_text(), 'verified': True}
+            journal.reconcile('crashed-call', 'shell', {'command': 'fixture'}, observed,
+                              evidence='Inspected the fixture side effect after exit 73')
+            receipt = journal.get_call('crashed-call')
+            self.assertEqual(receipt['status'], 'completed')
+            self.assertGreaterEqual(receipt['completed_ns'], receipt['started_ns'])
+            self.assertEqual(json.loads(journal.snapshot())['calls'][0], receipt)
+        with TranscriptJournal(self.path) as reopened:
+            self.assertEqual(reopened.execute('crashed-call', 'shell', {'command': 'fixture'},
+                                              lambda: self.fail('reconciled call replayed')), observed)
+            self.assertEqual(reopened.reconcile('crashed-call', 'shell', {'command': 'fixture'}, observed,
+                                                evidence=receipt['reconciliation_evidence']), observed)
+            self.assertEqual(reopened.get_call('crashed-call'), receipt)
+
+    def test_reconciliation_requires_exact_request_and_immutable_outcome(self):
+        with TranscriptJournal(self.path) as journal:
+            with self.assertRaises(RuntimeError):
+                journal.execute('call', 'shell', {'a': 1}, lambda: (_ for _ in ()).throw(RuntimeError('uncertain')))
+            for call_id, tool, args in (('missing', 'shell', {'a': 1}), ('call', 'patch', {'a': 1}),
+                                         ('call', 'shell', {'a': True})):
+                with self.subTest(call_id=call_id, tool=tool, args=args), self.assertRaises(ValueError):
+                    journal.reconcile(call_id, tool, args, 'observed', evidence='Inspected fixture')
+            self.assertEqual(journal.get_call('call')['status'], 'running')
+            journal.reconcile('call', 'shell', {'a': 1}, 'observed', evidence='Inspected fixture')
+            for result, evidence in (('different', 'Inspected fixture'), ('observed', 'Different evidence')):
+                with self.subTest(result=result, evidence=evidence), self.assertRaisesRegex(ValueError, 'cannot be reconciled'):
+                    journal.reconcile('call', 'shell', {'a': 1}, result, evidence=evidence)
+            journal.execute('normal', 'shell', {}, lambda: 'done')
+            with self.assertRaisesRegex(ValueError, 'cannot be reconciled'):
+                journal.reconcile('normal', 'shell', {}, 'done', evidence='Already completed')
+
+    def test_invalid_reconciliation_leaves_uncertain_call_unchanged(self):
+        with TranscriptJournal(self.path, max_document_bytes=128) as journal:
+            with self.assertRaises(RuntimeError):
+                journal.execute('call', 'shell', {}, lambda: (_ for _ in ()).throw(RuntimeError('uncertain')))
+            for result, evidence in ((object(), 'Inspected fixture'), (float('nan'), 'Inspected fixture'),
+                                     ('x' * 129, 'Inspected fixture'), ('done', ''), ('done', ' \n'),
+                                     ('done', 'x' * 129), ('done', {'not': 'text'})):
+                with self.subTest(evidence=evidence), self.assertRaises(ValueError):
+                    journal.reconcile('call', 'shell', {}, result, evidence=evidence)
+                self.assertEqual(journal.get_call('call')['status'], 'running')
+
+    def test_reconciliation_result_and_audit_commit_atomically(self):
+        with TranscriptJournal(self.path) as journal:
+            with self.assertRaises(RuntimeError):
+                journal.execute('call', 'shell', {}, lambda: (_ for _ in ()).throw(RuntimeError('uncertain')))
+            journal._db.execute("CREATE TRIGGER fail_audit BEFORE INSERT ON reconciliations BEGIN SELECT RAISE(ABORT,'fixture'); END")
+            with self.assertRaises(sqlite3.IntegrityError):
+                journal.reconcile('call', 'shell', {}, 'observed', evidence='Inspected fixture')
+            self.assertEqual(journal.get_call('call')['status'], 'running')
+            self.assertEqual(journal._db.execute('SELECT COUNT(*) FROM reconciliations').fetchone()[0], 0)
+            journal._db.execute('DROP TRIGGER fail_audit')
+            journal.reconcile('call', 'shell', {}, 'observed', evidence='Inspected fixture')
+            journal._db.execute("UPDATE reconciliations SET evidence='\"tampered\"'")
+            with self.assertRaisesRegex(ValueError, 'reconciliation checksum'):
+                journal.execute('call', 'shell', {}, lambda: self.fail('corrupt audit replayed'))
+
+    def test_active_executor_in_another_process_blocks_reconciliation(self):
+        code = '''
+import sys
+from backcluster.checkpoints import TranscriptJournal
+def executor():
+    print('ready', flush=True)
+    sys.stdin.readline()
+    return 'actual result'
+with TranscriptJournal(sys.argv[1]) as journal:
+    journal.execute('call', 'shell', {}, executor)
+'''
+        environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2] / 'tools'))
+        process = subprocess.Popen([sys.executable, '-c', code, str(self.path)], env=environment,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 5)[0], 'executor did not become ready')
+            self.assertEqual(process.stdout.readline(), b'ready\n')
+            with TranscriptJournal(self.path) as journal:
+                with self.assertRaisesRegex(ToolExecutionIndeterminate, 'active executors'):
+                    journal.reconcile('call', 'shell', {}, 'unverified', evidence='Must not win against active executor')
+                self.assertEqual(journal.get_call('call')['status'], 'running')
+            _, stderr = process.communicate(b'finish\n', timeout=5)
+            self.assertEqual(process.returncode, 0, stderr.decode())
+            with TranscriptJournal(self.path) as journal:
+                self.assertEqual(journal.get_call('call')['result'], 'actual result')
+                self.assertIsNone(journal.get_call('call')['reconciliation_evidence'])
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+    def test_legacy_journal_migration_retains_results_and_pending_calls(self):
+        with TranscriptJournal(self.path) as journal:
+            journal.record_message('user', 'legacy transcript')
+            journal.execute('done', 'shell', {}, lambda: 'legacy result')
+            with self.assertRaises(RuntimeError):
+                journal.execute('pending', 'shell', {}, lambda: (_ for _ in ()).throw(RuntimeError('uncertain')))
+            journal._db.execute('DROP TABLE reconciliations')
+            journal._db.execute('PRAGMA user_version=1')
+        with TranscriptJournal(self.path, create=False) as reopened:
+            self.assertEqual(reopened.messages()[0]['content'], 'legacy transcript')
+            self.assertEqual(reopened.execute('done', 'shell', {}, lambda: self.fail('legacy result replayed')), 'legacy result')
+            reopened.reconcile('pending', 'shell', {}, 'observed', evidence='Inspected legacy fixture')
+            self.assertEqual(reopened._db.execute('PRAGMA user_version').fetchone()[0], 2)
+
+    def test_existing_journal_required_and_executor_lock_symlink_rejected(self):
+        with self.assertRaises(FileNotFoundError):
+            TranscriptJournal(self.path, create=False)
+        self.assertFalse(self.path.exists())
+        self.path.write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, 'uninitialized'):
+            TranscriptJournal(self.path, create=False)
+        self.assertEqual(self.path.read_bytes(), b'')
+        self.path.unlink()
+        outside = Path(self.tmp.name) / 'outside'
+        outside.write_text('unchanged')
+        Path(str(self.path) + '.executors.lock').symlink_to(outside)
+        with TranscriptJournal(self.path) as journal:
+            with self.assertRaises(OSError):
+                journal.execute('call', 'shell', {}, lambda: self.fail('unsafe lock executed'))
+            self.assertIsNone(journal.get_call('call'))
+        self.assertEqual(outside.read_text(), 'unchanged')
 
     def test_concurrent_clients_never_execute_same_callback_twice(self):
         started, release = threading.Event(), threading.Event()
